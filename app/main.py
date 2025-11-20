@@ -148,6 +148,21 @@ from app.routers.workitems import (
     time_router,
 )
 from app.routers.projects import *
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+origins = [
+    "http://localhost:5173",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # TEMPORARY for testing → works 100%
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 from app.routers.employees import router as employees_router
 app = FastAPI(
     title=settings.PROJECT_NAME,
