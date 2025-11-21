@@ -23,5 +23,5 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # add Mongo settings so other modules can import them
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = os.getenv("MONGO_DB", "project_management")
+MONGO_URI = settings.MONGODB_URL
+DB_NAME = settings.MONGODB_DB_NAME
