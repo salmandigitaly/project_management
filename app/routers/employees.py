@@ -167,11 +167,34 @@ async def update_my_profile(payload: EmployeeUpdate, current_user: User = Depend
     if not data:
         raise HTTPException(status_code=400, detail="no valid fields to update")
 
-    # only allow these fields to be set
+    # only allow these logical fields to be set (map some to nested dicts)
     allowed = {"full_name", "personal_info", "work_info", "profile_image", "phone", "location", "payroll_group"}
     for k, v in data.items():
-        if k in allowed:
-            setattr(user_doc, k, v)
+        if k not in allowed:
+            continue
+
+        if k == "profile_image":
+            # store under personal_info.profile_image
+            pi = user_doc.personal_info or {}
+            pi["profile_image"] = v
+            user_doc.personal_info = _sanitize_dates(pi)
+            continue
+
+        if k in ("phone", "location"):
+            # store under personal_info
+            pi = user_doc.personal_info or {}
+            pi[k] = v
+            user_doc.personal_info = _sanitize_dates(pi)
+            continue
+
+        if k in ("personal_info", "work_info"):
+            # sanitize nested date/datetime values before saving
+            clean = _sanitize_dates(v) if v is not None else {}
+            setattr(user_doc, k, clean)
+            continue
+
+        # direct set for allowed top-level fields
+        setattr(user_doc, k, v)
 
     await user_doc.save()
 
@@ -185,7 +208,7 @@ async def update_my_profile(payload: EmployeeUpdate, current_user: User = Depend
         "work_info": getattr(user_doc, "work_info", None),
         "payroll_group": getattr(user_doc, "payroll_group", None),
         "leave_balances": getattr(user_doc, "leave_balances", []),
-        # "joined_at": getattr(user_doc, "joined_at", None),
+        "joined_at": getattr(user_doc, "joined_at", None),
     }
 
 
@@ -383,7 +406,7 @@ async def admin_approve_leave(leave_id: str = Path(...), current_user: User = De
 
     # update balances if user exists and we have a valid balance key and days
     if user_doc and balance_key and days > 0:
-        year = getattr(leave.start_date, "year", datetime.utcnow().year)
+        year = getattr(leave.start_date, "year", None) or datetime.utcnow().year
         balances = user_doc.leave_balances or []
         entry = next((b for b in balances if b.get("year") == year), None)
         if not entry:
