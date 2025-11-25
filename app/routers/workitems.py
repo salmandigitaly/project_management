@@ -1,663 +1,3 @@
-# # app/routers/workitems.py
-# from __future__ import annotations
-# from datetime import datetime
-# from typing import List, Optional, Literal, Dict, Any
-
-# from fastapi import APIRouter, Depends, HTTPException, Query
-# from fastapi.security import HTTPBearer
-# from beanie import PydanticObjectId
-
-# from app.routers.auth import get_current_user
-# from app.models.users import User
-# from app.models.workitems import (
-#     Project, Epic, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem
-# )
-# from app.schemas.project_management import (
-#     EpicCreate, EpicUpdate, EpicOut,
-#     IssueCreate, IssueUpdate, IssueOut,
-#     SprintCreate, SprintUpdate, SprintOut,
-#     CommentCreate, CommentOut,
-#     LinkCreate, LinkOut,
-#     TimeClockIn, TimeClockOut, TimeAddManual, TimeEntryOut,
-# )
-
-# from app.services.permission import PermissionService
-
-# security = HTTPBearer()
-
-
-# # ---------- EPICS ----------
-# class EpicsRouter:
-#     def __init__(self):
-#         self.router = APIRouter(prefix="/epics", tags=["epics"])
-#         self.setup_routes()
-
-#     def setup_routes(self):
-#         deps = [Depends(security), Depends(get_current_user)]
-#         self.router.add_api_route("/", self.list_epics, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/", self.create_epic, methods=["POST"], dependencies=deps)
-#         self.router.add_api_route("/{epic_id}", self.get_epic, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/{epic_id}", self.update_epic, methods=["PUT"], dependencies=deps)
-#         self.router.add_api_route("/{epic_id}", self.delete_epic, methods=["DELETE"], dependencies=deps)
-
-#     async def list_epics(
-#         self,
-#         project_id: str = Query(...),
-#         current_user: User = Depends(get_current_user)
-#     ):
-#         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access to project")
-
-#         epics = await Epic.find(Epic.project.id == PydanticObjectId(project_id)).to_list()
-#         return [self._doc(e) for e in epics]
-
-#     async def create_epic(self, data: EpicCreate, current_user: User = Depends(get_current_user)):
-#         if not await PermissionService.can_edit_project(data.project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access to create")
-
-#         project = await Project.get(data.project_id)
-#         if not project:
-#             raise HTTPException(status_code=404, detail="Project not found")
-
-#         epic = Epic(
-#             name=data.name,
-#             description=data.description,
-#             project=project,
-#             start_date=data.start_date,
-#             end_date=data.end_date,
-#             created_by=current_user,
-#             updated_by=current_user,
-#         )
-#         await epic.insert()
-#         return self._doc(epic)
-
-#     async def get_epic(self, epic_id: str, current_user: User = Depends(get_current_user)):
-#         epic = await Epic.get(epic_id)
-#         if not epic:
-#             raise HTTPException(status_code=404, detail="Epic not found")
-#         if not await PermissionService.can_view_project(str(epic.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-#         return self._doc(epic)
-
-#     async def update_epic(self, epic_id: str, data: EpicUpdate, current_user: User = Depends(get_current_user)):
-#         epic = await Epic.get(epic_id)
-#         if not epic:
-#             raise HTTPException(status_code=404, detail="Epic not found")
-#         if not await PermissionService.can_edit_project(str(epic.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         await epic.set({k: v for k, v in data.dict(exclude_unset=True).items()})
-#         epic.updated_by = current_user
-#         epic.updated_at = datetime.utcnow()
-#         await epic.save()
-#         return self._doc(epic)
-
-#     async def delete_epic(self, epic_id: str, current_user: User = Depends(get_current_user)):
-#         epic = await Epic.get(epic_id)
-#         if not epic:
-#             raise HTTPException(status_code=404, detail="Epic not found")
-#         if not await PermissionService.can_edit_project(str(epic.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         await epic.delete()
-#         return {"message": "Epic deleted"}
-
-#     def _doc(self, e: Epic) -> Dict[str, Any]:
-#         d = e.dict()
-#         d["id"] = str(e.id)
-#         d["project_id"] = str(e.project.id) if e.project else None
-#         return d
-
-
-# # ---------- ISSUES ----------
-# class IssuesRouter:
-#     def __init__(self):
-#         self.router = APIRouter(prefix="/issues", tags=["issues"])
-#         self.setup_routes()
-
-#     def setup_routes(self):
-#         deps = [Depends(security), Depends(get_current_user)]
-#         self.router.add_api_route("/", self.list_issues, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/", self.create_issue, methods=["POST"], dependencies=deps)
-#         self.router.add_api_route("/{issue_id}", self.get_issue, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/{issue_id}", self.update_issue, methods=["PUT"], dependencies=deps)
-#         self.router.add_api_route("/{issue_id}", self.delete_issue, methods=["DELETE"], dependencies=deps)
-#         self.router.add_api_route("/{issue_id}/move", self.move_issue, methods=["POST"], dependencies=deps)
-#         self.router.add_api_route("/{issue_id}/subtasks", self.add_subtask, methods=["POST"], dependencies=deps)
-
-#     async def list_issues(
-#         self,
-#         project_id: str = Query(...),
-#         sprint_id: Optional[str] = Query(None),
-#         epic_id: Optional[str] = Query(None),
-#         current_user: User = Depends(get_current_user),
-#     ):
-#         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access to project")
-
-#         base_q = Issue.project.id == PydanticObjectId(project_id)
-#         issues = await Issue.find(base_q).to_list()
-
-#         if sprint_id:
-#             issues = [i for i in issues if (i.sprint and str(i.sprint.id) == sprint_id)]
-#         if epic_id:
-#             issues = [i for i in issues if (i.epic and str(i.epic.id) == epic_id)]
-
-#         return [self._doc(i) for i in issues]
-
-#     async def create_issue(self, data: IssueCreate, current_user: User = Depends(get_current_user)):
-#         if not await PermissionService.can_view_project(data.project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access to project")
-
-#         project = await Project.get(data.project_id)
-#         if not project:
-#             raise HTTPException(status_code=404, detail="Project not found")
-
-#         epic = await Epic.get(data.epic_id) if getattr(data, "epic_id", None) else None
-#         sprint = await Sprint.get(data.sprint_id) if getattr(data, "sprint_id", None) else None
-#         assignee = await User.get(data.assignee_id) if getattr(data, "assignee_id", None) else None
-#         parent = await Issue.get(data.parent_id) if getattr(data, "parent_id", None) else None
-
-#         issue = Issue(
-#             project=project,
-#             epic=epic,
-#             sprint=sprint,
-#             type=data.type,
-#             name=data.name,
-#             description=data.description,
-#             priority=data.priority,
-#             assignee=assignee,
-#             parent=parent,
-#             story_points=data.story_points,
-#             estimated_hours=data.estimated_hours,
-#             created_by=current_user,
-#             updated_by=current_user,
-#             location=data.location,
-#         )
-#         await issue.insert()
-#         return self._doc(issue)
-
-#     async def get_issue(self, issue_id: str, current_user: User = Depends(get_current_user)):
-#         issue = await Issue.get(issue_id)
-#         if not issue:
-#             raise HTTPException(status_code=404, detail="Issue not found")
-#         if not await PermissionService.can_view_project(str(issue.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-#         return self._doc(issue)
-
-#     async def update_issue(self, issue_id: str, data: IssueUpdate, current_user: User = Depends(get_current_user)):
-#         issue = await Issue.get(issue_id)
-#         if not issue:
-#             raise HTTPException(status_code=404, detail="Issue not found")
-#         if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         payload = data.dict(exclude_unset=True)
-
-#         # handle relation id fields explicitly
-#         if "epic_id" in payload:
-#             epic_id = payload.pop("epic_id")
-#             issue.epic = await Epic.get(epic_id) if epic_id else None
-#         if "sprint_id" in payload:
-#             sprint_id = payload.pop("sprint_id")
-#             issue.sprint = await Sprint.get(sprint_id) if sprint_id else None
-#         if "assignee_id" in payload:
-#             assignee_id = payload.pop("assignee_id")
-#             issue.assignee = await User.get(assignee_id) if assignee_id else None
-#         if "parent_id" in payload:
-#             parent_id = payload.pop("parent_id")
-#             issue.parent = await Issue.get(parent_id) if parent_id else None
-
-#         await issue.set(payload)
-#         issue.updated_by = current_user
-#         issue.updated_at = datetime.utcnow()
-#         await issue.save()
-#         return self._doc(issue)
-
-#     async def delete_issue(self, issue_id: str, current_user: User = Depends(get_current_user)):
-#         issue = await Issue.get(issue_id)
-#         if not issue:
-#             raise HTTPException(status_code=404, detail="Issue not found")
-#         if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         await issue.delete()
-#         return {"message": "Issue deleted"}
-
-#     async def move_issue(
-#         self,
-#         issue_id: str,
-#         to: Literal["backlog", "sprint", "board"] = Query(...),
-#         sprint_id: Optional[str] = Query(None),
-#         current_user: User = Depends(get_current_user),
-#     ):
-#         issue = await Issue.get(issue_id)
-#         if not issue:
-#             raise HTTPException(status_code=404, detail="Issue not found")
-#         if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         if to == "sprint":
-#             if not sprint_id:
-#                 raise HTTPException(status_code=400, detail="sprint_id required")
-#             sprint = await Sprint.get(sprint_id)
-#             if not sprint:
-#                 raise HTTPException(status_code=404, detail="Sprint not found")
-#             issue.sprint = sprint
-#         else:  # backlog or board
-#             issue.sprint = None
-
-#         issue.location = to
-#         await issue.save()
-#         return self._doc(issue)
-
-#     async def add_subtask(self, issue_id: str, data: IssueCreate, current_user: User = Depends(get_current_user)):
-#         parent = await Issue.get(issue_id)
-#         if not parent:
-#             raise HTTPException(status_code=404, detail="Parent issue not found")
-#         if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         project = await Project.get(data.project_id)
-#         if not project:
-#             raise HTTPException(status_code=404, detail="Project not found")
-
-#         sub = Issue(
-#             project=project,
-#             epic=parent.epic,
-#             sprint=parent.sprint,
-#             type="subtask",
-#             name=data.name,
-#             description=data.description,
-#             priority=data.priority,
-#             assignee=await User.get(data.assignee_id) if getattr(data, "assignee_id", None) else None,
-#             parent=parent,
-#             created_by=current_user,
-#             updated_by=current_user,
-#             location=parent.location,
-#         )
-#         await sub.insert()
-#         return self._doc(sub)
-
-#     def _doc(self, i: Issue) -> Dict[str, Any]:
-#         d = i.dict()
-#         d["id"] = str(i.id)
-#         d["project_id"] = str(i.project.id) if i.project else None
-#         d["epic_id"] = str(i.epic.id) if i.epic else None
-#         d["sprint_id"] = str(i.sprint.id) if i.sprint else None
-#         d["assignee_id"] = str(i.assignee.id) if i.assignee else None
-#         d["parent_id"] = str(i.parent.id) if i.parent else None
-#         return d
-
-
-# # ---------- SPRINTS ----------
-# class SprintsRouter:
-#     def __init__(self):
-#         self.router = APIRouter(prefix="/sprints", tags=["sprints"])
-#         self.setup_routes()
-
-#     def setup_routes(self):
-#         deps = [Depends(security), Depends(get_current_user)]
-#         self.router.add_api_route("/", self.list_sprints, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/", self.create_sprint, methods=["POST"], dependencies=deps)
-#         self.router.add_api_route("/{sprint_id}", self.get_sprint, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/{sprint_id}", self.update_sprint, methods=["PUT"], dependencies=deps)
-#         self.router.add_api_route("/{sprint_id}", self.delete_sprint, methods=["DELETE"], dependencies=deps)
-
-#     async def list_sprints(self, project_id: str = Query(...), current_user: User = Depends(get_current_user)):
-#         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access to project")
-#         sprints = await Sprint.find(Sprint.project.id == PydanticObjectId(project_id)).to_list()
-#         return [self._doc(s) for s in sprints]
-
-#     async def create_sprint(self, data: SprintCreate, current_user: User = Depends(get_current_user)):
-#         if not await PermissionService.can_manage_sprint(data.project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access to create sprint")
-
-#         project = await Project.get(data.project_id)
-#         if not project:
-#             raise HTTPException(status_code=404, detail="Project not found")
-
-#         sprint = Sprint(
-#             name=data.name,
-#             project=project,
-#             goal=data.goal,
-#             start_date=data.start_date,
-#             end_date=data.end_date,
-#             created_by=current_user,
-#         )
-#         await sprint.insert()
-#         return self._doc(sprint)
-
-#     async def get_sprint(self, sprint_id: str, current_user: User = Depends(get_current_user)):
-#         sprint = await Sprint.get(sprint_id)
-#         if not sprint:
-#             raise HTTPException(status_code=404, detail="Sprint not found")
-#         if not await PermissionService.can_view_project(str(sprint.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-#         return self._doc(sprint)
-
-#     async def update_sprint(self, sprint_id: str, data: SprintUpdate, current_user: User = Depends(get_current_user)):
-#         sprint = await Sprint.get(sprint_id)
-#         if not sprint:
-#             raise HTTPException(status_code=404, detail="Sprint not found")
-#         if not await PermissionService.can_manage_sprint(str(sprint.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         await sprint.set({k: v for k, v in data.dict(exclude_unset=True).items()})
-#         return self._doc(sprint)
-
-#     async def delete_sprint(self, sprint_id: str, current_user: User = Depends(get_current_user)):
-#         sprint = await Sprint.get(sprint_id)
-#         if not sprint:
-#             raise HTTPException(status_code=404, detail="Sprint not found")
-#         if not await PermissionService.can_manage_sprint(str(sprint.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         await sprint.delete()
-#         return {"message": "Sprint deleted"}
-
-#     def _doc(self, s: Sprint) -> Dict[str, Any]:
-#         d = s.dict()
-#         d["id"] = str(s.id)
-#         d["project_id"] = str(s.project.id) if s.project else None
-#         return d
-
-
-# # ---------- COMMENTS ----------
-# class CommentsRouter:
-#     def __init__(self):
-#         self.router = APIRouter(prefix="/comments", tags=["comments"])
-#         self.setup_routes()
-
-#     def setup_routes(self):
-#         deps = [Depends(security), Depends(get_current_user)]
-#         self.router.add_api_route("/", self.list_comments, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/", self.create_comment, methods=["POST"], dependencies=deps)
-#         self.router.add_api_route("/{comment_id}", self.delete_comment, methods=["DELETE"], dependencies=deps)
-
-#     async def list_comments(
-#         self,
-#         issue_id: str = Query(...),
-#         current_user: User = Depends(get_current_user)
-#     ):
-#         issue = await Issue.get(issue_id)
-#         if not issue:
-#             raise HTTPException(status_code=404, detail="Issue not found")
-#         if not await PermissionService.can_view_project(str(issue.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         comments = await Comment.find(Comment.issue.id == issue.id).to_list()
-#         out: List[Dict[str, Any]] = []
-#         for c in comments:
-#             d = c.dict()
-#             d["id"] = str(c.id)
-#             d["issue_id"] = str(c.issue.id)
-#             d["project_id"] = str(c.project.id)
-#             d["author_id"] = str(c.author.id)
-#             out.append(d)
-#         return out
-
-#     async def create_comment(self, data: CommentCreate, current_user: User = Depends(get_current_user)):
-#         issue = await Issue.get(data.issue_id)
-#         if not issue:
-#             raise HTTPException(status_code=404, detail="Issue not found")
-#         if not await PermissionService.can_comment(data.issue_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         project = await Project.get(data.project_id)
-#         if not project:
-#             raise HTTPException(status_code=404, detail="Project not found")
-
-#         epic = await Epic.get(data.epic_id) if getattr(data, "epic_id", None) else None
-
-#         comment = Comment(
-#             project=project,
-#             epic=epic,
-#             issue=issue,
-#             author=current_user,
-#             comment=data.comment,
-#         )
-#         await comment.insert()
-#         d = comment.dict()
-#         d["id"] = str(comment.id)
-#         return d
-
-#     async def delete_comment(self, comment_id: str, current_user: User = Depends(get_current_user)):
-#         c = await Comment.get(comment_id)
-#         if not c:
-#             raise HTTPException(status_code=404, detail="Comment not found")
-
-#         # author or admin may delete
-#         if (str(c.author.id) != str(current_user.id)) and (current_user.role != "admin"):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         await c.delete()
-#         return {"message": "Comment deleted"}
-
-
-# # ---------- LINKS ----------
-# class LinksRouter:
-#     def __init__(self):
-#         self.router = APIRouter(prefix="/links", tags=["linked-workitems"])
-#         self.setup_routes()
-
-#     def setup_routes(self):
-#         deps = [Depends(security), Depends(get_current_user)]
-#         self.router.add_api_route("/", self.list_links, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/", self.create_link, methods=["POST"], dependencies=deps)
-#         self.router.add_api_route("/{link_id}", self.delete_link, methods=["DELETE"], dependencies=deps)
-
-#     async def list_links(self, issue_id: str = Query(...), current_user: User = Depends(get_current_user)):
-#         issue = await Issue.get(issue_id)
-#         if not issue:
-#             raise HTTPException(status_code=404, detail="Issue not found")
-#         if not await PermissionService.can_view_project(str(issue.project.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         links = await LinkedWorkItem.find(
-#             (LinkedWorkItem.issue.id == issue.id) | (LinkedWorkItem.linked_issue.id == issue.id)
-#         ).to_list()
-
-#         out: List[Dict[str, Any]] = []
-#         for l in links:
-#             d = l.dict()
-#             d["id"] = str(l.id)
-#             d["issue_id"] = str(l.issue.id)
-#             d["linked_issue_id"] = str(l.linked_issue.id)
-#             out.append(d)
-#         return out
-
-#     async def create_link(self, data: LinkCreate, current_user: User = Depends(get_current_user)):
-#         main = await Issue.get(data.issue_id)
-#         other = await Issue.get(data.linked_issue_id)
-#         if not main or not other:
-#             raise HTTPException(status_code=404, detail="Issue(s) not found")
-
-#         if not await PermissionService.can_edit_workitem(str(main.id), str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         if str(main.id) == str(other.id):
-#             raise HTTPException(status_code=400, detail="Cannot link issue to itself")
-
-#         link = LinkedWorkItem(issue=main, linked_issue=other, reason=data.reason)
-#         await link.insert()
-#         d = link.dict()
-#         d["id"] = str(link.id)
-#         return d
-
-#     async def delete_link(self, link_id: str, current_user: User = Depends(get_current_user)):
-#         link = await LinkedWorkItem.get(link_id)
-#         if not link:
-#             raise HTTPException(status_code=404, detail="Link not found")
-
-#         if not (
-#             await PermissionService.can_edit_workitem(str(link.issue.id), str(current_user.id))
-#             or await PermissionService.can_edit_workitem(str(link.linked_issue.id), str(current_user.id))
-#         ):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         await link.delete()
-#         return {"message": "Link deleted"}
-
-
-# # ---------- TIME TRACKING ----------
-# class TimeRouter:
-#     def __init__(self):
-#         self.router = APIRouter(prefix="/time", tags=["time-tracking"])
-#         self.setup_routes()
-
-#     def setup_routes(self):
-#         deps = [Depends(security), Depends(get_current_user)]
-#         self.router.add_api_route("/entries", self.list_entries, methods=["GET"], dependencies=deps)
-#         self.router.add_api_route("/clock-in", self.clock_in, methods=["POST"], dependencies=deps)
-#         self.router.add_api_route("/clock-out", self.clock_out, methods=["POST"], dependencies=deps)
-#         self.router.add_api_route("/add", self.add_manual, methods=["POST"], dependencies=deps)
-
-#     async def list_entries(
-#         self,
-#         project_id: str = Query(...),
-#         issue_id: Optional[str] = Query(None),
-#         current_user: User = Depends(get_current_user),
-#     ):
-#         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         q = TimeEntry.project.id == PydanticObjectId(project_id)
-#         entries = await TimeEntry.find(q).to_list()
-
-#         if issue_id:
-#             entries = [t for t in entries if str(t.issue.id) == issue_id]
-
-#         out: List[Dict[str, Any]] = []
-#         for t in entries:
-#             out.append({
-#                 "id": str(t.id),
-#                 "project_id": str(t.project.id),
-#                 "issue_id": str(t.issue.id),
-#                 "user_id": str(t.user.id),
-#                 "clock_in": t.clock_in,
-#                 "clock_out": t.clock_out,
-#                 "seconds": t.seconds,
-#             })
-#         return out
-
-#     async def clock_in(self, data: TimeClockIn, current_user: User = Depends(get_current_user)):
-#         if not await PermissionService.can_view_project(data.project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         issue = await Issue.get(data.issue_id)
-#         if not issue:
-#             raise HTTPException(status_code=404, detail="Issue not found")
-
-#         project = await Project.get(data.project_id)
-#         if not project:
-#             raise HTTPException(status_code=404, detail="Project not found")
-
-#         entry = TimeEntry(
-#             project=project,
-#             issue=issue,
-#             user=current_user,
-#             clock_in=datetime.utcnow(),
-#             clock_out=None,
-#             seconds=0,
-#         )
-#         await entry.insert()
-#         return {"id": str(entry.id)}
-
-#     async def clock_out(self, data: TimeClockOut, current_user: User = Depends(get_current_user)):
-#         entry = await TimeEntry.get(data.time_entry_id)
-#         if not entry:
-#             raise HTTPException(status_code=404, detail="Time entry not found")
-
-#         if str(entry.user.id) != str(current_user.id) and current_user.role != "admin":
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         if entry.clock_out:
-#             raise HTTPException(status_code=400, detail="Already clocked out")
-
-#         entry.clock_out = datetime.utcnow()
-#         entry.seconds = int((entry.clock_out - entry.clock_in).total_seconds())
-#         await entry.save()
-#         return {"id": str(entry.id), "seconds": entry.seconds}
-
-#     async def add_manual(self, data: TimeAddManual, current_user: User = Depends(get_current_user)):
-#         if not await PermissionService.can_view_project(data.project_id, str(current_user.id)):
-#             raise HTTPException(status_code=403, detail="No access")
-
-#         project = await Project.get(data.project_id)
-#         issue = await Issue.get(data.issue_id)
-#         if not project or not issue:
-#             raise HTTPException(status_code=404, detail="Project/Issue not found")
-
-#         now = datetime.utcnow()
-#         entry = TimeEntry(
-#             project=project,
-#             issue=issue,
-#             user=current_user,
-#             clock_in=now,
-#             clock_out=now,
-#             seconds=int(data.seconds),
-#         )
-#         await entry.insert()
-#         return {"id": str(entry.id), "seconds": entry.seconds}
-
-
-# # Expose routers
-# epics_router = EpicsRouter().router
-# issues_router = IssuesRouter().router
-# sprints_router = SprintsRouter().router
-# comments_router = CommentsRouter().router
-# links_router = LinksRouter().router
-# time_router = TimeRouter().router
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # app/routers/workitems.py
 from __future__ import annotations
 from datetime import datetime
@@ -670,16 +10,17 @@ from beanie import PydanticObjectId
 from app.routers.auth import get_current_user
 from app.models.users import User
 from app.models.workitems import (
-    Backlog, Project, Epic, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem
+    Project, Epic, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem
 )
 from app.schemas.project_management import (
-    EpicCreate, EpicUpdate,
-    IssueCreate, IssueUpdate,
-    SprintCreate, SprintUpdate,
-    CommentCreate,
-    LinkCreate,
-    TimeClockIn, TimeClockOut, TimeAddManual,
+    EpicCreate, EpicUpdate, EpicOut,
+    IssueCreate, IssueUpdate, IssueOut,
+    SprintCreate, SprintUpdate, SprintOut,
+    CommentCreate, CommentOut,
+    LinkCreate, LinkOut,
+    TimeClockIn, TimeClockOut, TimeAddManual, TimeEntryOut,
 )
+
 from app.services.permission import PermissionService
 
 security = HTTPBearer()
@@ -1031,6 +372,7 @@ class IssuesRouter:
         issue = await Issue.get(issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
+        # delete_issue: use the function parameter issue_id (not undefined issueId)
         if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
 
@@ -1047,7 +389,7 @@ class IssuesRouter:
         issue = await Issue.get(issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
-        if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
+        if not await PermissionService.can_edit_workitem(_id_of(issue), str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
 
         # Remove from old sprint's issue_ids list
@@ -1062,7 +404,15 @@ class IssuesRouter:
         if to == "sprint":
             sprint = await Sprint.get(sprint_id)
             if issue.id not in sprint.issue_ids:
-                sprint.issue_ids.append(issue.id)
+                # wrong:
+                # sprint.issue_ids.append(issue.Id)
+
+                # fixed:
+                from beanie import PydanticObjectId
+                # ensure using string or PydanticObjectId depending on model
+                sprint.issue_ids.append(str(issue.id))   # if issue_ids is list[str]
+                # or
+                # sprint.issue_ids.append(PydanticObjectId(issue.id))  # if model expects ObjectId
                 await sprint.save()
             
             issue.sprint = sprint
@@ -1077,7 +427,7 @@ class IssuesRouter:
         parent = await Issue.get(issue_id)
         if not parent:
             raise HTTPException(status_code=404, detail="Parent issue not found")
-        if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
+        if not await PermissionService.can_edit_workitem(issue.Id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
 
         project = await Project.get(str(data.project_id))
@@ -1130,7 +480,7 @@ class IssuesRouter:
                     errors.append(f"Issue {issue_id} not found")
                     continue
 
-                if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
+                if not await PermissionService.can_edit_workitem(_id_of(issue), str(current_user.id)):
                     errors.append(f"No access to issue {issue_id}")
                     continue
 
@@ -1152,7 +502,15 @@ class IssuesRouter:
                         continue
                     
                     if issue.id not in sprint.issue_ids:
-                        sprint.issue_ids.append(issue.id)
+                        # wrong:
+                        # sprint.issue_ids.append(issue.Id)
+
+                        # fixed:
+                        from beanie import PydanticObjectId
+                        # ensure using string or PydanticObjectId depending on model
+                        sprint.issue_ids.append(str(issue.id))   # if issue_ids is list[str]
+                        # or
+                        # sprint.issue_ids.append(PydanticObjectId(issue.id))  # if model expects ObjectId
                         await sprint.save()
                     
                     issue.sprint = sprint
@@ -1578,3 +936,35 @@ sprints_router = SprintsRouter().router
 comments_router = CommentsRouter().router
 links_router = LinksRouter().router
 time_router = TimeRouter().router
+
+router = APIRouter()
+
+@router.get("/sprints/{sprint_id}", response_model=SprintOut)
+async def get_sprint(sprint_id: str, user=Depends(get_current_user)):
+    sprint = await Sprint.get(PydanticObjectId(sprint_id))
+    if not sprint:
+        raise HTTPException(status_code=404, detail="Sprint not found")
+    data = sprint.dict()
+    data["id"] = str(sprint.id)
+    # ensure issue_ids are strings
+    data["issue_ids"] = [str(i) for i in getattr(sprint, "issue_ids", [])]
+    # project is a Link; expose project id string
+    try:
+        data["project_id"] = str(sprint.project.id)
+    except Exception:
+        data["project_id"] = str(data.get("project"))
+    return data
+
+@router.get("/sprints/", response_model=List[SprintOut])
+async def list_sprints(page: int = 1, limit: int = 50, user=Depends(get_current_user)):
+    items = []
+    async for s in Sprint.find().skip((page-1)*limit).limit(limit):
+        d = s.dict()
+        d["id"] = str(s.id)
+        d["issue_ids"] = [str(i) for i in getattr(s, "issue_ids", [])]
+        try:
+            d["project_id"] = str(s.project.id)
+        except Exception:
+            d["project_id"] = str(d.get("project"))
+        items.append(d)
+    return items

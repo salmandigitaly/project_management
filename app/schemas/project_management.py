@@ -166,12 +166,18 @@ class SprintUpdate(BaseModel):
     end_date: Optional[datetime] = None
 
 
-class SprintOut(IDModel):
+class SprintOut(BaseModel):
+    id: str
     name: str
-    project_id: PydanticObjectId
+    project_id: str
     goal: Optional[str] = None
-    start_date: datetime
-    end_date: datetime
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    state: Optional[str] = None
+    issue_ids: List[str] = []   # <-- new field exposed to clients
+
+    class Config:
+        orm_mode = True
 
 
 # -------- Issue --------
