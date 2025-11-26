@@ -3,6 +3,9 @@ from typing import Optional, List, Dict, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
 from beanie import PydanticObjectId
+from typing import Optional, List
+from datetime import datetime
+from pydantic import BaseModel
 
 Platform = Literal["ios", "android", "web"]
 IssueType = Literal["story", "task", "bug", "subtask"]
@@ -185,6 +188,7 @@ class IssueBase(BaseModel):
     project_id: PydanticObjectId
     epic_id: Optional[PydanticObjectId] = None
     sprint_id: Optional[PydanticObjectId] = None
+    feature_id: Optional[PydanticObjectId] = None
     type: IssueType
     name: str
     description: Optional[str] = None
@@ -251,6 +255,7 @@ class IssueOut(IDModel, TimeStampMixin):
     project_id: PydanticObjectId
     epic_id: Optional[PydanticObjectId] = None
     sprint_id: Optional[PydanticObjectId] = None
+    feature_id: Optional[PydanticObjectId] = None
     type: IssueType
     name: str
     description: Optional[str] = None
@@ -344,3 +349,31 @@ class ColumnUpdate(BaseModel):
 # class ColumnsResponse(BaseModel):
 #     columns: List[Dict[str, Any]]
 #     total_columns: int
+
+class FeatureCreate(BaseModel):
+    project_id: PydanticObjectId
+    epic_id: Optional[PydanticObjectId] = None
+    name: str
+    description: Optional[str] = None
+    priority: Optional[str] = "medium"
+    status: Optional[str] = "todo"
+
+class FeatureUpdate(BaseModel):
+    name: Optional[str]
+    description: Optional[str]
+    priority: Optional[str]
+    status: Optional[str]
+
+class FeatureOut(BaseModel):
+    id: str
+    project_id: str
+    epic_id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True

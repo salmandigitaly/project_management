@@ -1,135 +1,7 @@
-# from fastapi import FastAPI
-# from fastapi.middleware.cors import CORSMiddleware  # ADD THIS IMPORT
-# from app.core.config import settings
-# from app.core.database import init_db
-
-# # Import routers
-# from app.routers.projects import projects_router
-# from app.routers.epics import epics_router
-# from app.routers.stories import stories_router
-# from app.routers.tasks import tasks_router
-# from app.routers.subtasks import subtasks_router
-# from app.routers.sprints import sprints_router
-# from app.routers.boards import boards_router
-# from app.routers.comments import comments_router
-# from app.routers.activity import activity_router
-# from app.routers.attachments import attachments_router
-# from app.routers.links import links_router
-# from app.routers.search import search_router
-# from app.routers.auth import auth_router
-# from app.routers.users import users_router
-# from app.routers.feature import features_router
-# from app.routers.workflows import workflows_router  # NEW IMPORT
-# from app.routers.custom_fields import custom_fields_router
-# from app.routers.time_tracking import time_tracking_router
-# from app.routers.voting import voting_router
-# from app.routers.notifications import notifications_router
-# from app.routers.reports import reports_router
-# from app.routers.labels import router as labels_router
-# # Add OpenAPI security configuration
-# from app.routers.components import components_router
-# from app.routers.components import components_router
-# from app.routers.versions import versions_router
-# from fastapi.openapi.utils import get_openapi
-# from app.routers.bugs import bugs_router
-# from app.routers.backlog import backlog_router
-# app = FastAPI(
-#     title=settings.PROJECT_NAME,
-#     version=settings.VERSION,
-#     openapi_url=f"{settings.API_V1_STR}/openapi.json"
-# )
-
-# # ADD CORS MIDDLEWARE (ONLY THIS SECTION ADDED)
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],  # Allows all origins
-#     allow_credentials=True,
-#     allow_methods=["*"],  # Allows all methods
-#     allow_headers=["*"],  # Allows all headers
-# )
-
-# # Custom OpenAPI schema with JWT security
-# def custom_openapi():
-#     if app.openapi_schema:
-#         return app.openapi_schema
-    
-#     openapi_schema = get_openapi(
-#         title=settings.PROJECT_NAME,
-#         version=settings.VERSION,
-#         description="JIRA Clone API with JWT Authentication",
-#         routes=app.routes,
-#     )
-    
-#     # Add JWT security scheme
-#     openapi_schema["components"]["securitySchemes"] = {
-#         "Bearer": {
-#             "type": "http",
-#             "scheme": "bearer",
-#             "bearerFormat": "JWT"
-#         }
-#     }
-    
-#     # Add security to all paths (except auth endpoints)
-#     for path, methods in openapi_schema["paths"].items():
-#         if not path.startswith(f"{settings.API_V1_STR}/auth"):
-#             for method in methods.values():
-#                 method["security"] = [{"Bearer": []}]
-    
-#     app.openapi_schema = openapi_schema
-#     return app.openapi_schema
-
-# app.openapi = custom_openapi
-
-# # Include routers
-# app.include_router(auth_router, prefix=settings.API_V1_STR)
-# app.include_router(users_router, prefix=settings.API_V1_STR)
-# app.include_router(projects_router, prefix=settings.API_V1_STR)
-# app.include_router(epics_router, prefix=settings.API_V1_STR)
-# app.include_router(stories_router, prefix=settings.API_V1_STR)
-# app.include_router(tasks_router, prefix=settings.API_V1_STR)
-# app.include_router(subtasks_router, prefix=settings.API_V1_STR)
-# app.include_router(sprints_router, prefix=settings.API_V1_STR)
-# app.include_router(boards_router, prefix=settings.API_V1_STR)
-# app.include_router(comments_router, prefix=settings.API_V1_STR)
-# app.include_router(activity_router, prefix=settings.API_V1_STR)
-# app.include_router(attachments_router, prefix=settings.API_V1_STR)
-# app.include_router(links_router, prefix=settings.API_V1_STR)
-# app.include_router(search_router, prefix=settings.API_V1_STR)
-# app.include_router(features_router, prefix=settings.API_V1_STR, tags=["features"])  # NEW ROUTER INCLUDED
-# app.include_router(workflows_router, prefix=settings.API_V1_STR)
-# app.include_router(custom_fields_router, prefix=settings.API_V1_STR)
-# app.include_router(bugs_router, prefix=settings.API_V1_STR, tags=["bugs"])
-# app.include_router(time_tracking_router, prefix=settings.API_V1_STR)
-# app.include_router(voting_router, prefix=settings.API_V1_STR)
-# app.include_router(notifications_router, prefix=settings.API_V1_STR)
-# app.include_router(reports_router, prefix=settings.API_V1_STR)
-# app.include_router(labels_router)
-# app.include_router(components_router, prefix=settings.API_V1_STR)
-# app.include_router(components_router, prefix=settings.API_V1_STR)
-# app.include_router(versions_router, prefix=settings.API_V1_STR)
-# app.include_router(backlog_router, prefix=settings.API_V1_STR)
-# @app.on_event("startup")
-# async def startup_event():
-#     await init_db()
-
-# @app.get("/")
-# async def root():
-#     return {"message": "JIRA Clone API", "version": settings.VERSION}
-
-# @app.get("/health")
-# async def health_check():
-#     return {"status": "healthy"}
-
-
-
-
-
-
-
 from app.core.config import settings
 print("✅ Loaded Mongo URL:", settings.MONGODB_URL)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
@@ -137,38 +9,29 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.routers.boards import *
 # Routers that actually exist now
-from app.routers.auth import auth_router
+from app.routers.auth import auth_router, get_current_user
 from app.routers.users import users_router
 from app.routers.workitems import (
-    epics_router,
-    issues_router,
-    sprints_router,
-    comments_router,
-    links_router,
-    time_router,
+    epics_router, issues_router, sprints_router, comments_router,
+    links_router, time_router, features_router
 )
 from app.routers.projects import *
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
-origins = [
-    "http://localhost:5173",
-]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # TEMPORARY for testing → works 100%
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# add these imports
+from app.services.permission import PermissionService
+try:
+    # prefer explicit employees_router if present
+    from app.routers.employees import employees_router
+except Exception:
+    try:
+        # fallback if module exports `router` instead
+        from app.routers.employees import router as employees_router
+    except Exception:
+        employees_router = None
 
-from app.routers.employees import router as employees_router
-app = FastAPI(
-    title=settings.PROJECT_NAME,
-    version=settings.VERSION,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
-)
+app = FastAPI(title="Project Management")  # or existing app
 
 # CORS
 app.add_middleware(
@@ -217,9 +80,19 @@ app.include_router(sprints_router, prefix=api_prefix)
 app.include_router(comments_router, prefix=api_prefix)
 app.include_router(links_router, prefix=api_prefix)
 app.include_router(time_router, prefix=api_prefix)
+
+# include features router so Swagger shows a separate "features" section
+app.include_router(features_router, prefix=api_prefix)
+
 app.include_router(projects_router,prefix=api_prefix)
 app.include_router(boards_router,prefix=api_prefix)
-app.include_router(employees_router, prefix="/api/v1")
+if employees_router:
+    app.include_router(employees_router, prefix=api_prefix)
+else:
+    print("⚠️ employees router not found — /employees endpoints will not be shown in /docs")
+
+# if employees_router is None, the app will skip including it (avoids NameError)
+
 @app.on_event("startup")
 async def startup_event():
     await init_db()
@@ -231,3 +104,15 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+# temporary debug endpoint — remove when done
+@app.get("/debug/can_view/{project_id}")
+async def debug_can_view(project_id: str, current_user = Depends(get_current_user)):
+    return {
+        "user_id": str(getattr(current_user, "id", None)),
+        "role": getattr(current_user, "role", None),
+        "can_view": await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None)))
+    }
+
+# NOTE: removed inline DB update that ran at import time.
+# If you need to add a user to a project for testing, run a separate script or use a protected endpoint.

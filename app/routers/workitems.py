@@ -5,17 +5,19 @@ from typing import List, Optional, Literal, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPBearer
+from typing import List
 from beanie import PydanticObjectId
 
 from app.routers.auth import get_current_user
 from app.models.users import User
 from app.models.workitems import (
-    Project, Epic, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem, Backlog
+    Project, Epic, Feature, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem, Backlog
 )
 from app.schemas.project_management import (
     EpicCreate, EpicUpdate, EpicOut,
     IssueCreate, IssueUpdate, IssueOut,
     SprintCreate, SprintUpdate, SprintOut,
+    FeatureCreate, FeatureUpdate, FeatureOut,
     CommentCreate, CommentOut,
     LinkCreate, LinkOut,
     TimeClockIn, TimeClockOut, TimeAddManual, TimeEntryOut,
@@ -302,24 +304,27 @@ class IssuesRouter:
         sprint = await Sprint.get(str(data.sprint_id)) if getattr(data, "sprint_id", None) else None
         assignee = await User.get(str(data.assignee_id)) if getattr(data, "assignee_id", None) else None
         parent = await Issue.get(str(data.parent_id)) if getattr(data, "parent_id", None) else None
+        feature = await Feature.get(str(data.feature_id)) if getattr(data, "feature_id", None) else None
 
         issue = Issue(
-            key=key,
-            project=project,
-            epic=epic,
-            sprint=sprint,
-            type=data.type,
-            name=data.name,
-            description=data.description,
-            priority=data.priority,
-            assignee=assignee,
-            parent=parent,
-            story_points=data.story_points,
-            estimated_hours=data.estimated_hours,
-            created_by=current_user,
-            updated_by=current_user,
-            location=data.location,
-        )
+             key=key,
+             project=project,
+             epic=epic,
+             sprint=sprint,
+             type=data.type,
+             name=data.name,
+             description=data.description,
+             priority=data.priority,
+             assignee=assignee,
+             parent=parent,
+             story_points=data.story_points,
+             estimated_hours=data.estimated_hours,
+             created_by=current_user,
+             updated_by=current_user,
+             location=data.location,
+            # persist feature id explicitly so it appears in API responses
+            feature_id=PydanticObjectId(feature.id) if feature else None,
+         )
         await issue.insert()
 
         # ADD ISSUE TO BACKLOG
@@ -361,6 +366,11 @@ class IssuesRouter:
         if "parent_id" in payload:
             parent_id = payload.pop("parent_id")
             issue.parent = await Issue.get(str(parent_id)) if parent_id else None
+        if "feature_id" in payload:
+            feature_id = payload.pop("feature_id")
+            issue.feature = await Feature.get(str(feature_id)) if feature_id else None
+            # also persist feature id field
+            issue.feature_id = PydanticObjectId(feature_id) if feature_id else None
 
         await issue.set(payload)
         issue.updated_by = current_user
@@ -554,6 +564,8 @@ class IssuesRouter:
             "created_at": getattr(i, "created_at", None),
             "updated_at": getattr(i, "updated_at", None),
             "location": i.location,
+            # safe: support either a linked Feature (i.feature) or plain feature_id field
+            "feature_id": _id_of(getattr(i, "feature", None) or getattr(i, "feature_id", None)),
         }
 
 
@@ -574,8 +586,40 @@ class SprintsRouter:
     async def list_sprints(self, project_id: str = Query(...), current_user: User = Depends(get_current_user)):
         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access to project")
+
+        # get sprints for project
         sprints = await Sprint.find(Sprint.project.id == PydanticObjectId(project_id)).to_list()
-        return [self._doc_sprint(s) for s in sprints]
+
+        # fetch all issues for project and group by sprint id (safe for Link / id types)
+        all_issues = await Issue.find(Issue.project.id == PydanticObjectId(project_id)).to_list()
+        from collections import defaultdict
+        grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for issue in all_issues:
+            sid = _id_of(issue.sprint)
+            if not sid:
+                continue
+            grouped[sid].append({
+                "id": _id_of(issue),
+                "key": getattr(issue, "key", None),
+                "type": issue.type,
+                "name": issue.name,
+                "status": issue.status,
+                "assignee_id": _id_of(getattr(issue, "assignee", None)),
+                "story_points": issue.story_points,
+                "estimated_hours": issue.estimated_hours,
+                "time_spent_hours": issue.time_spent_hours,
+                "location": issue.location,
+                "feature_id": _id_of(getattr(issue, "feature", None) or getattr(issue, "feature_id", None)),
+            })
+
+        out: List[Dict[str, Any]] = []
+        for s in sprints:
+            doc = self._doc_sprint(s)
+            sid = _id_of(s)
+            doc["issues"] = grouped.get(sid, [])
+            doc["issues_count"] = len(doc["issues"])
+            out.append(doc)
+        return out
 
     async def create_sprint(self, data: SprintCreate, current_user: User = Depends(get_current_user)):
         if not await PermissionService.can_manage_sprint(str(data.project_id), str(current_user.id)):
@@ -600,9 +644,42 @@ class SprintsRouter:
         sprint = await Sprint.get(sprint_id)
         if not sprint:
             raise HTTPException(status_code=404, detail="Sprint not found")
+        # use _id_of to support Links / fetched docs
         if not await PermissionService.can_view_project(_id_of(sprint.project), str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
-        return self._doc_sprint(sprint)
+
+        # build issues details from sprint.issue_ids
+        issues_list: List[Dict[str, Any]] = []
+        for iid in getattr(sprint, "issue_ids", []) or []:
+            try:
+                issue = await Issue.get(iid)
+            except Exception:
+                issue = None
+            if not issue:
+                continue
+            issues_list.append({
+                "id": str(issue.id),
+                "key": getattr(issue, "key", None),
+                "type": issue.type,
+                "name": issue.name,
+                "status": issue.status,
+                "assignee_id": _id_of(getattr(issue, "assignee", None)),
+                "story_points": issue.story_points,
+                "estimated_hours": issue.estimated_hours,
+                "time_spent_hours": issue.time_spent_hours,
+                "location": issue.location,
+                "feature_id": str(getattr(issue, "feature_id", None)) if getattr(issue, "feature_id", None) else None,
+            })
+
+        return {
+            "id": _id_of(sprint),
+            "name": sprint.name,
+            "project_id": _id_of(sprint.project),
+            "goal": sprint.goal,
+            "start_date": getattr(sprint, "start_date", None),
+            "end_date": getattr(sprint, "end_date", None),
+            "issues": issues_list,
+        }
 
     async def update_sprint(self, sprint_id: str, data: SprintUpdate, current_user: User = Depends(get_current_user)):
         sprint = await Sprint.get(sprint_id)
@@ -937,6 +1014,7 @@ sprints_router = SprintsRouter().router
 comments_router = CommentsRouter().router
 links_router = LinksRouter().router
 time_router = TimeRouter().router
+#features_router = FeaturesRouter().router
 
 router = APIRouter()
 
@@ -950,10 +1028,8 @@ async def get_sprint(sprint_id: str, user=Depends(get_current_user)):
     # ensure issue_ids are strings
     data["issue_ids"] = [str(i) for i in getattr(sprint, "issue_ids", [])]
     # project is a Link; expose project id string
-    try:
-        data["project_id"] = str(sprint.project.id)
-    except Exception:
-        data["project_id"] = str(data.get("project"))
+    # use _id_of to consistently produce project id string from Link or doc
+    data["project_id"] = _id_of(sprint.project) or str(data.get("project"))
     return data
 
 @router.get("/sprints/", response_model=List[SprintOut])
@@ -969,3 +1045,155 @@ async def list_sprints(page: int = 1, limit: int = 50, user=Depends(get_current_
             d["project_id"] = str(d.get("project"))
         items.append(d)
     return items
+
+@router.get("/projects/", response_model=List[Dict[str, Any]])
+async def list_projects(skip: int = 0, limit: int = 100, current_user: User = Depends(get_current_user)):
+    """
+    Admin -> return all projects (paged).
+    Non-admin -> return only projects current_user can view (owner/member/public).
+    """
+    items: List[Dict[str, Any]] = []
+    async for p in Project.find().skip(skip).limit(limit):
+        # admin sees everything
+        if getattr(current_user, "role", None) == "admin":
+            allowed = True
+        else:
+            # use PermissionService to decide per-project visibility
+            allowed = await PermissionService.can_view_project(str(p.id), str(getattr(current_user, "id", None)))
+        if not allowed:
+            continue
+        items.append({
+            "id": str(p.id),
+            "name": getattr(p, "name", None),
+            "owner_id": PermissionService and (str(getattr(p, "owner", None)) if getattr(p, "owner", None) else None),
+            "key": getattr(p, "key", None),
+            "description": getattr(p, "description", None),
+            "public": getattr(p, "public", False),
+        })
+    return items
+
+@router.get("/projects/{project_id}")
+async def get_project(project_id: str, current_user: User = Depends(get_current_user)):
+    proj = await Project.get(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # require permission to view
+    if not await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None))):
+        raise HTTPException(status_code=403, detail="No access to project")
+
+    return {
+        "id": _id_of(proj),
+        "name": proj.name,
+        "owner_id": str(getattr(proj, "owner", None)) if getattr(proj, "owner", None) else None,
+        "key": getattr(proj, "key", None),
+        "description": getattr(proj, "description", None),
+        "public": getattr(proj, "public", False),
+        # add other fields you need
+    }
+
+# add a dedicated router for features (separate Swagger group)
+features_router = APIRouter(prefix="/features", tags=["features"])
+
+# replace the old @router.post("/features", ...) etc with these handlers
+
+@features_router.post("/", response_model=FeatureOut)
+async def create_feature(payload: FeatureCreate, current_user: User = Depends(get_current_user)):
+    # permission check (ensure current_user can edit project)
+    if not await PermissionService.can_edit_project(str(payload.project_id), str(current_user.id)):
+        raise HTTPException(status_code=403, detail="No access")
+    proj = await Project.get(PydanticObjectId(payload.project_id))
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    f = Feature(
+        name=payload.name,
+        description=payload.description,
+        project_id=PydanticObjectId(payload.project_id),
+        epic_id=PydanticObjectId(payload.epic_id) if payload.epic_id else None,
+        priority=payload.priority,
+        status=payload.status,
+        created_by=PydanticObjectId(str(current_user.id))
+    )
+    await f.insert()
+    return FeatureOut(
+        id=str(f.id),
+        project_id=str(f.project_id),
+        epic_id=str(f.epic_id) if f.epic_id else None,
+        name=f.name,
+        description=f.description,
+        priority=f.priority,
+        status=f.status,
+        created_by=str(f.created_by) if f.created_by else None,
+        created_at=f.created_at
+    )
+
+@features_router.get("/", response_model=List[FeatureOut])
+async def list_features(project_id: str = Query(...), current_user: User = Depends(get_current_user)):
+    items = []
+    async for f in Feature.find(Feature.project_id == PydanticObjectId(project_id)):
+        items.append(FeatureOut(
+            id=str(f.id),
+            project_id=str(f.project_id),
+            epic_id=str(f.epic_id) if f.epic_id else None,
+            name=f.name,
+            description=f.description,
+            priority=f.priority,
+            status=f.status,
+            created_by=str(f.created_by) if f.created_by else None,
+            created_at=f.created_at
+        ))
+    return items
+
+@features_router.get("/{feature_id}", response_model=FeatureOut)
+async def get_feature(feature_id: str, current_user: User = Depends(get_current_user)):
+    f = await Feature.get(feature_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    if not await PermissionService.can_view_project(str(f.project_id), str(current_user.id)):
+        raise HTTPException(status_code=403, detail="No access")
+    return FeatureOut(
+        id=str(f.id),
+        project_id=str(f.project_id),
+        epic_id=str(f.epic_id) if f.epic_id else None,
+        name=f.name,
+        description=f.description,
+        priority=f.priority,
+        status=f.status,
+        created_by=str(f.created_by) if f.created_by else None,
+        created_at=f.created_at
+    )
+
+@features_router.put("/{feature_id}", response_model=FeatureOut)
+async def update_feature(feature_id: str, payload: FeatureUpdate, current_user: User = Depends(get_current_user)):
+    f = await Feature.get(feature_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    if not await PermissionService.can_edit_project(str(f.project_id), str(current_user.id)):
+        raise HTTPException(status_code=403, detail="No access")
+    await f.set({k: v for k, v in payload.dict(exclude_unset=True).items()})
+    await f.save()
+    return {"id": str(f.id), "name": f.name}
+
+@features_router.delete("/{feature_id}")
+async def delete_feature(feature_id: str, current_user: User = Depends(get_current_user)):
+    f = await Feature.get(feature_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    if not await PermissionService.can_edit_project(str(f.project_id), str(current_user.id)):
+        raise HTTPException(status_code=403, detail="No access")
+    await f.delete()
+    return {"message": "Feature deleted"}
+
+@router.get("/debug/whoami")
+async def debug_whoami(project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
+    """
+    Debug: returns current user id/role and optionally whether they can view a project.
+    Use this to confirm the token user and PermissionService behavior.
+    """
+    out = {
+        "user_id": str(getattr(current_user, "id", None)),
+        "role": getattr(current_user, "role", None),
+    }
+    if project_id:
+        out["can_view_project"] = await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None)))
+    return out

@@ -11,6 +11,7 @@ from beanie import (
 )
 
 from app.models.users import User  # existing User model
+#from app.models.workitems import Project, Epic  # adjust if circular imports happen
 
 # ---- Enums / constants ----
 Platform = Literal["ios", "android", "web"]
@@ -154,6 +155,9 @@ class Issue(Document):
     subtasks: List[BackLink["Issue"]] = Field(default_factory=list)
     comments: List[BackLink["Comment"]] = Field(default_factory=list)
 
+    # add this persisted field so API responses include the feature id
+    feature_id: Optional[PydanticObjectId] = None
+
     @validator("story_points")
     def _validate_fib(cls, v):
         if v is None:
@@ -277,3 +281,19 @@ class Backlog(Document):
     class Settings:
         name = "backlogs"
         use_state_management = True
+
+# ================= Features =================
+class Feature(Document):
+    name: str
+    description: Optional[str] = None
+    project_id: PydanticObjectId
+    epic_id: Optional[PydanticObjectId] = None
+    status: str = "todo"
+    priority: str = "medium"
+    created_by: Optional[PydanticObjectId] = None
+    updated_by: Optional[PydanticObjectId] = None
+    created_at: datetime = datetime.utcnow()
+    updated_at: Optional[datetime] = None
+
+    class Settings:
+        name = "features"

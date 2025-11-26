@@ -2,32 +2,63 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from datetime import datetime
-from typing import List, Dict, Optional, Any
-from beanie import PydanticObjectId
-
 from app.routers.auth import get_current_user
-from app.models.users import User  # your Beanie User document
-from app.models.workitems import Board, Backlog, Epic, Issue, Project, BoardColumn, Sprint
-from app.schemas.project_management import ProjectCreate, ProjectUpdate, ProjectOut, UserSummary, MemberSummary
+from app.models.users import User
+from app.models.workitems import Project
+# typing helpers and fallback Any marker used by this module
+from typing import List, Optional, Dict, Any as _Any, Any
+from app.services.permission import PermissionService
+# try to import related models for populating lists; fallback to _Any if missing
+try:
+    from app.models.workitems import Epic, Sprint, Issue
+except Exception:
+    Epic = Sprint = Issue = _Any
+
+# safe imports for Pydantic models / helpers that may live in other modules.
+# If your project defines these in different modules, replace the try/except targets.
+try:
+    from app.schemas.projects import ProjectOut, ProjectCreate, ProjectUpdate
+except Exception:
+    ProjectOut = ProjectCreate = ProjectUpdate = _Any
+
+try:
+    from beanie import PydanticObjectId
+except Exception:
+    PydanticObjectId = _Any
+
+try:
+    from app.models.boards import Backlog, Board, BoardColumn
+except Exception:
+    Backlog = Board = BoardColumn = _Any
+
+try:
+    from app.schemas.users import UserSummary, MemberSummary
+except Exception:
+    UserSummary = MemberSummary = _Any
+
 from bson import ObjectId
 
-
-def _link_id(link) -> Optional[str]:
-    """
-    Return string id from a Beanie Link/Document/ObjectId/None safely.
-    Works whether the link is fetched or not.
-    """
+# helper: normalize a Link / object / id to string id
+def _link_id(link):
+    """Return string id from Link / Document / str / ObjectId-like objects."""
     if not link:
         return None
-    if hasattr(link, "id"):
-        try:
-            return str(link.id)
-        except Exception:
-            pass
-    if hasattr(link, "ref") and getattr(link.ref, "id", None) is not None:
-        return str(link.ref.id)
-    if isinstance(link, ObjectId):
-        return str(link)
+    # if it's already a string or ObjectId-like, return str()
+    try:
+        # beanie Link/document: may have .id or .ref.id
+        if getattr(link, "id", None):
+            return str(getattr(link, "id"))
+        ref = getattr(link, "ref", None)
+        if ref and getattr(ref, "id", None):
+            return str(getattr(ref, "id"))
+        # some Link wrappers may expose .link_id or ._id
+        if getattr(link, "link_id", None):
+            return str(getattr(link, "link_id"))
+        if getattr(link, "_id", None):
+            return str(getattr(link, "_id"))
+    except Exception:
+        pass
+    # fallback to string conversion
     try:
         return str(link)
     except Exception:
@@ -86,39 +117,53 @@ class ProjectsController(BaseController):
         data: Dict[str, Any] = project.dict()
         data["id"] = str(project.id)
 
-        async def user_info(user_link):
+        # helper: get user document (best-effort) and return summary dict
+        async def _get_user_summary_dict(user_link):
             if not user_link:
                 return None
             uid = _link_id(user_link)
-            user = await User.get(uid)
-            if user:
-                # try common name fields, fall back to username/display_name/first+last, then email prefix
-                name = (
-                    getattr(user, "name", None)
-                    or getattr(user, "full_name", None)
-                    or getattr(user, "display_name", None)
-                    or getattr(user, "username", None)
-                    or (" ".join(filter(None, [getattr(user, "first_name", ""), getattr(user, "last_name", "")]))).strip()
-                )
-                if not name:
-                    email = getattr(user, "email", "") or ""
-                    name = email.split("@", 1)[0] if "@" in email else ""
-                return {
-                    "id": str(user.id),
-                    "name": name or "",
-                    "email": getattr(user, "email", None),
-                }
-            return {"id": uid, "name": None, "email": None}
+            if not uid:
+                return None
+            user = None
+            # Try Beanie.get with PydanticObjectId, then fallback to find_one by _id
+            try:
+                if PydanticObjectId is not _Any:
+                    user = await User.get(PydanticObjectId(str(uid)))
+                else:
+                    user = await User.get(str(uid))
+            except Exception:
+                try:
+                    user = await User.find_one({"_id": ObjectId(str(uid))})
+                except Exception:
+                    try:
+                        user = await User.find_one({"_id": uid})
+                    except Exception:
+                        user = None
 
-        data["project_lead"] = await user_info(project.project_lead)
-        data["created_by"] = await user_info(project.created_by)
-        data["updated_by"] = await user_info(project.updated_by)
+            if not user:
+                return {"id": uid, "name": "", "email": None}
+
+            name = (
+                getattr(user, "name", None)
+                or getattr(user, "full_name", None)
+                or getattr(user, "display_name", None)
+                or getattr(user, "username", None)
+                or (" ".join(filter(None, [getattr(user, "first_name", ""), getattr(user, "last_name", "")]))).strip()
+            )
+            if not name:
+                email = getattr(user, "email", "") or ""
+                name = email.split("@", 1)[0] if "@" in email else ""
+
+            return {"id": str(getattr(user, "id", uid)), "name": name or "", "email": getattr(user, "email", None)}
+
+        data["project_lead"] = await _get_user_summary_dict(project.project_lead)
+        data["created_by"] = await _get_user_summary_dict(project.created_by)
+        data["updated_by"] = await _get_user_summary_dict(project.updated_by)
 
         members_dict: Dict[str, str] = getattr(project, "members", {}) or {}
         detailed_members = []
         for user_id, role in members_dict.items():
-            ui = await user_info(user_id)
-            # ui can be None or dict with id,name,email
+            ui = await _get_user_summary_dict(user_id)
             detailed_members.append({
                 "id": ui["id"] if ui else str(user_id),
                 "name": (ui["name"] if ui else "") or "",
@@ -129,7 +174,46 @@ class ProjectsController(BaseController):
         data["members"] = detailed_members
         data.pop("member_roles", None)
 
-        return ProjectOut(**data)
+        # populate related lists (epics/sprints/issues) with lightweight summaries
+        # safe: only run if model import succeeded
+        epics_list = []
+        if Epic is not _Any:
+            async for e in Epic.find():
+                if _link_id(getattr(e, "project", None)) == str(project.id):
+                    epics_list.append({"id": str(getattr(e, "id", None)), "title": getattr(e, "title", getattr(e, "name", None))})
+        data["epics"] = epics_list
+
+        sprints_list = []
+        if Sprint is not _Any:
+            async for s in Sprint.find():
+                if _link_id(getattr(s, "project", None)) == str(project.id):
+                    sprints_list.append({"id": str(getattr(s, "id", None)), "name": getattr(s, "name", None)})
+        data["sprints"] = sprints_list
+
+        issues_list = []
+        if Issue is not _Any:
+            try:
+                # use raw motor collection to avoid Beanie model validation errors
+                col = Issue.get_motor_collection()
+                async for doc in col.find({"project": ObjectId(str(project.id))}):
+                    issues_list.append({
+                        "id": str(doc.get("_id")),
+                        "title": doc.get("title") or doc.get("summary") or ""
+                    })
+            except Exception:
+                # fallback: leave issues_list empty on any error
+                issues_list = []
+        data["issues"] = issues_list
+
+        # If ProjectOut is the fallback Any (_Any) we cannot instantiate it.
+        # Return plain dict in that case; otherwise construct the Pydantic model.
+        if ProjectOut is _Any:
+            return data
+        try:
+            return ProjectOut(**data)
+        except Exception:
+            # If construction fails for any reason, return plain dict as a safe fallback
+            return data
 
     async def create_defaults(self, project: Project):
         pid = str(project.id)
@@ -160,16 +244,33 @@ class ProjectsController(BaseController):
         limit: int = Query(100, ge=1, le=1000),
         current_user: User = Depends(get_current_user),
     ):
-        await self.ensure_admin(current_user)
-        projects = await Project.find(skip=skip, limit=limit).to_list()
-        return [await self.to_response(p) for p in projects]
+        """
+        Admin: return all projects (paged).
+        Non-admin: return only projects the user can view (owner/member/public).
+        """
+        out = []
+        async for p in Project.find().skip(skip).limit(limit):
+            # admin sees everything
+            if getattr(current_user, "role", None) == "admin":
+                allowed = True
+            else:
+                allowed = await PermissionService.can_view_project(str(p.id), str(getattr(current_user, "id", None)))
+            if not allowed:
+                continue
+            out.append(await self.to_response(p))
+        return out
 
     async def get_project(self, project_id: str, current_user: User = Depends(get_current_user)):
-        await self.ensure_admin(current_user)
-        project = await Project.get(project_id)
-        if not project:
+        proj = await Project.get(project_id)
+        if not proj:
             raise HTTPException(status_code=404, detail="Project not found")
-        return await self.to_response(project)
+
+        # allow admin OR owner/member OR public projects
+        if not await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None))):
+            raise HTTPException(status_code=403, detail="No access to project")
+        
+        # return full detailed response using the shared to_response converter
+        return await self.to_response(proj)
 
     async def create_project(self, payload: ProjectCreate, current_user: User = Depends(get_current_user)):
         await self.ensure_admin(current_user)

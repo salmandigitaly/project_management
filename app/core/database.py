@@ -1,16 +1,16 @@
 from beanie import init_beanie, Document
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from app.core.config import MONGO_URI, DB_NAME
+from app.core.config import MONGO_URI, DB_NAME, settings
 
 # import only model classes (some may not be Document subclasses)
 from app.models.users import User
-from app.models.workitems import Project, Issue, Epic, Board, Backlog, Sprint  # exclude BoardColumn if it's not a Document
+from app.models.workitems import Project, Epic, Issue, Sprint, Feature, Board, Backlog, Comment, TimeEntry  # adjust to your model list
 from app.models.employee import Attendance, LeaveRequest
 
 async def init_db():
-    client = AsyncIOMotorClient(MONGO_URI)
-    db = client[DB_NAME]
+    client = AsyncIOMotorClient(settings.MONGODB_URL)
+    db = client.get_default_database()
 
     # list candidate models
     candidate_models = [
@@ -21,6 +21,9 @@ async def init_db():
         Board,
         Backlog,
         Sprint,
+        Feature,
+        TimeEntry,
+        Comment,
         Attendance,
         LeaveRequest,
         # add additional Document classes here
