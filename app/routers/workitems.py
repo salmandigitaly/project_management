@@ -10,7 +10,7 @@ from beanie import PydanticObjectId
 from app.routers.auth import get_current_user
 from app.models.users import User
 from app.models.workitems import (
-    Project, Epic, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem
+    Project, Epic, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem, Backlog
 )
 from app.schemas.project_management import (
     EpicCreate, EpicUpdate, EpicOut,
@@ -325,11 +325,11 @@ class IssuesRouter:
         # ADD ISSUE TO BACKLOG
         backlog = await Backlog.find_one({"project_id": str(project.id)})
         if backlog:
-            if str(issue.id) not in backlog.items:
-                backlog.items.append(str(issue.id))
+            # compare as strings to avoid ObjectId / string mismatches
+            if not any(str(i) == str(issue.id) for i in backlog.items):
+                # store as ObjectId-like (PydanticObjectId) to match model type
+                backlog.items.append(PydanticObjectId(issue.id))
                 await backlog.save()
-
-
         return self._doc_issue(issue)
     async def get_issue(self, issue_id: str, current_user: User = Depends(get_current_user)):
         issue = await Issue.get(issue_id)
@@ -427,8 +427,9 @@ class IssuesRouter:
         parent = await Issue.get(issue_id)
         if not parent:
             raise HTTPException(status_code=404, detail="Parent issue not found")
-        if not await PermissionService.can_edit_workitem(issue.Id, str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
+        # use helper to get parent id string
+        if not await PermissionService.can_edit_workitem(_id_of(parent), str(current_user.id)):
+             raise HTTPException(status_code=403, detail="No access")
 
         project = await Project.get(str(data.project_id))
         if not project:
