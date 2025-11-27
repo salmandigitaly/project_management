@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from fastapi.security import HTTPBearer
 from typing import List
 from beanie import PydanticObjectId
@@ -206,6 +206,7 @@ class IssuesRouter:
         self.router.add_api_route("/{issue_id}/move", self.move_issue, methods=["POST"], dependencies=deps)
         self.router.add_api_route("/{issue_id}/subtasks", self.add_subtask, methods=["POST"], dependencies=deps)
         self.router.add_api_route("/move-multiple", self.move_multiple_issues, methods=["POST"], dependencies=deps)
+        self.router.add_api_route("/sprints/{sprint_id}/issues/{issue_id}", self.remove_issue_from_sprint, methods=["DELETE"], dependencies=deps)
     # async def list_issues(
     #     self,
     #     project_id: str = Query(...),
@@ -348,8 +349,7 @@ class IssuesRouter:
         issue = await Issue.get(issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
-        if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
+        # permission check removed: all authenticated users can update issues
 
         payload = data.dict(exclude_unset=True)
 
@@ -382,9 +382,7 @@ class IssuesRouter:
         issue = await Issue.get(issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
-        # delete_issue: use the function parameter issue_id (not undefined issueId)
-        if not await PermissionService.can_edit_workitem(issue_id, str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
+        # permission check removed: allow authenticated users to delete issues
 
         await issue.delete()
         return {"message": "Issue deleted"}
@@ -399,10 +397,9 @@ class IssuesRouter:
         issue = await Issue.get(issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
-        if not await PermissionService.can_edit_workitem(_id_of(issue), str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
+        # permission check removed: allow authenticated users to move issues
 
-        # Remove from old sprint's issue_ids list
+        # Remove from old sprint's issue_ids
         # Remove from old sprint's issue_ids
         if issue.sprint:
             old_sprint = await Sprint.get(_id_of(issue.sprint))
@@ -491,9 +488,7 @@ class IssuesRouter:
                     errors.append(f"Issue {issue_id} not found")
                     continue
 
-                if not await PermissionService.can_edit_workitem(_id_of(issue), str(current_user.id)):
-                    errors.append(f"No access to issue {issue_id}")
-                    continue
+                # permission check removed: allow authenticated users to move issues
 
                 # Remove from old sprint's issue_ids
                 if issue.sprint:
@@ -541,6 +536,34 @@ class IssuesRouter:
             "errors": errors,
             "message": f"Successfully moved {len(moved_issues)} issues to {to}"
         }
+
+    async def remove_issue_from_sprint(self, sprint_id: str = Path(...), issue_id: str = Path(...), current_user: User = Depends(get_current_user)):
+        """
+        DELETE /sprints/{sprint_id}/issues/{issue_id}
+        Remove the issue from its sprint and move it to backlog.
+        """
+        issue = await Issue.get(issue_id)
+        if not issue:
+            raise HTTPException(status_code=404, detail="Issue not found")
+
+        # Remove from old sprint.issue_ids if present
+        if issue.sprint:
+            try:
+                old_sprint = await Sprint.get(_id_of(issue.sprint))
+            except Exception:
+                old_sprint = None
+            if old_sprint:
+                current_ids = getattr(old_sprint, "issue_ids", []) or []
+                filtered = [i for i in current_ids if str(i) != str(issue.id)]
+                old_sprint.issue_ids = filtered
+                await old_sprint.save()
+
+        # clear sprint reference on issue and move to backlog
+        issue.sprint = None
+        issue.location = "backlog"
+        await issue.save()
+
+        return {"message": "Issue removed", "issue_id": issue_id, "sprint_id": sprint_id}
 
     def _doc_issue(self, i: Issue) -> Dict[str, Any]:
         return {
@@ -795,8 +818,6 @@ class CommentsRouter:
         issue = await Issue.get(str(data.issue_id))
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
-        if not await PermissionService.can_comment(str(data.issue_id), str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
 
         project = await Project.get(str(data.project_id))
         if not project:
@@ -886,11 +907,7 @@ class LinksRouter:
         if not link:
             raise HTTPException(status_code=404, detail="Link not found")
 
-        if not (
-            await PermissionService.can_edit_workitem(_id_of(link.issue), str(current_user.id))
-            or await PermissionService.can_edit_workitem(_id_of(link.linked_issue), str(current_user.id))
-        ):
-            raise HTTPException(status_code=403, detail="No access")
+        # permission check removed: allow authenticated users to delete links
 
         await link.delete()
         return {"message": "Link deleted"}

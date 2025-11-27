@@ -31,6 +31,14 @@ except Exception:
     except Exception:
         employees_router = None
 
+try:
+    from app.routers.workitems import sprints_router
+except Exception:
+    try:
+        from app.routers.workitems import router as sprints_router
+    except Exception:
+        sprints_router = None
+
 app = FastAPI(title="Project Management")  # or existing app
 
 # CORS
