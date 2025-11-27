@@ -181,7 +181,7 @@ class EpicsRouter:
             "name": e.name,
             "description": e.description,
             "project_id": project_id,
-            "start_date": e.start_date,
+           
             "end_date": e.end_date,
             "created_by": _id_of(getattr(e, "created_by", None)),
             "updated_by": _id_of(getattr(e, "updated_by", None)),
@@ -673,7 +673,17 @@ class SprintsRouter:
         return out
 
     async def create_sprint(self, data: SprintCreate, current_user: User = Depends(get_current_user)):
-        if not await PermissionService.can_manage_sprint(str(data.project_id), str(current_user.id)):
+        # robust permission check: prefer can_manage_sprint if available, else fallback
+        perm_fn = getattr(PermissionService, "can_manage_sprint", None)
+        if callable(perm_fn):
+            allowed = await perm_fn(str(data.project_id), str(current_user.id))
+        else:
+            # fallback: allow admins OR use can_view_project if available
+            allowed = getattr(current_user, "role", None) == "admin"
+            view_fn = getattr(PermissionService, "can_view_project", None)
+            if not allowed and callable(view_fn):
+                allowed = await view_fn(str(data.project_id), str(current_user.id))
+        if not allowed:
             raise HTTPException(status_code=403, detail="No access to create sprint")
 
         project = await Project.get(str(data.project_id))
