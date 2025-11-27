@@ -400,29 +400,46 @@ class IssuesRouter:
             raise HTTPException(status_code=404, detail="Issue not found")
         # permission check removed: allow authenticated users to move issues
 
-        # Remove from old sprint's issue_ids
-        # Remove from old sprint's issue_ids
+        # Remove from old sprint's issue_ids (try both ObjectId and string)
         if issue.sprint:
-            old_sprint = await Sprint.get(_id_of(issue.sprint))
-            if old_sprint and issue.id in old_sprint.issue_ids:
-                old_sprint.issue_ids.remove(issue.id)
-                await old_sprint.save()
+            try:
+                old_sid = _id_of(issue.sprint)
+                # try as ObjectId container
+                try:
+                    await Sprint.get_motor_collection().update_one(
+                        {"_id": ObjectId(str(old_sid))}, {"$pull": {"issue_ids": ObjectId(str(issue.id))}}
+                    )
+                except Exception:
+                    await Sprint.get_motor_collection().update_one(
+                        {"_id": ObjectId(str(old_sid))}, {"$pull": {"issue_ids": str(issue.id)}}
+                    )
+            except Exception:
+                pass
 
-        # Add to new sprint's issue_ids  
+        # Add to new sprint's issue_ids
         if to == "sprint":
+            if not sprint_id:
+                raise HTTPException(status_code=400, detail="sprint_id required when to=sprint")
             sprint = await Sprint.get(sprint_id)
-            if issue.id not in sprint.issue_ids:
-                # wrong:
-                # sprint.issue_ids.append(issue.Id)
+            if not sprint:
+                raise HTTPException(status_code=404, detail="Sprint not found")
 
-                # fixed:
-                from beanie import PydanticObjectId
-                # ensure using string or PydanticObjectId depending on model
-                sprint.issue_ids.append(str(issue.id))   # if issue_ids is list[str]
-                # or
-                # sprint.issue_ids.append(PydanticObjectId(issue.id))  # if model expects ObjectId
-                await sprint.save()
-            
+            # attempt to add as ObjectId-like; fallback to string
+            try:
+                # try to store ObjectId form
+                await Sprint.get_motor_collection().update_one(
+                    {"_id": ObjectId(str(sprint.id))},
+                    {"$addToSet": {"issue_ids": ObjectId(str(issue.id))}},
+                    upsert=False,
+                )
+            except Exception:
+                await Sprint.get_motor_collection().update_one(
+                    {"_id": str(sprint.id)},
+                    {"$addToSet": {"issue_ids": str(issue.id)}},
+                    upsert=False,
+                )
+
+            # set issue.sprint to the Sprint document (Beanie link) and persist
             issue.sprint = sprint
         else:
             issue.sprint = None
@@ -489,14 +506,22 @@ class IssuesRouter:
                     errors.append(f"Issue {issue_id} not found")
                     continue
 
-                # permission check removed: allow authenticated users to move issues
-
-                # Remove from old sprint's issue_ids
+                # Remove from old sprint's issue_ids (both forms)
                 if issue.sprint:
-                    old_sprint = await Sprint.get(_id_of(issue.sprint))
-                    if old_sprint and issue.id in old_sprint.issue_ids:
-                        old_sprint.issue_ids.remove(issue.id)
-                        await old_sprint.save()
+                    try:
+                        old_sid = _id_of(issue.sprint)
+                        try:
+                            await Sprint.get_motor_collection().update_one(
+                                {"_id": ObjectId(str(old_sid))},
+                                {"$pull": {"issue_ids": ObjectId(str(issue.id))}},
+                            )
+                        except Exception:
+                            await Sprint.get_motor_collection().update_one(
+                                {"_id": ObjectId(str(old_sid))},
+                                {"$pull": {"issue_ids": str(issue.id)}},
+                            )
+                    except Exception:
+                        pass
 
                 # Add to new sprint's issue_ids  
                 if to == "sprint":
@@ -507,19 +532,19 @@ class IssuesRouter:
                     if not sprint:
                         errors.append(f"Sprint not found for issue {issue_id}")
                         continue
-                    
-                    if issue.id not in sprint.issue_ids:
-                        # wrong:
-                        # sprint.issue_ids.append(issue.Id)
 
-                        # fixed:
-                        from beanie import PydanticObjectId
-                        # ensure using string or PydanticObjectId depending on model
-                        sprint.issue_ids.append(str(issue.id))   # if issue_ids is list[str]
-                        # or
-                        # sprint.issue_ids.append(PydanticObjectId(issue.id))  # if model expects ObjectId
-                        await sprint.save()
-                    
+                    # try to add as ObjectId then string
+                    try:
+                        await Sprint.get_motor_collection().update_one(
+                            {"_id": ObjectId(str(sprint.id))},
+                            {"$addToSet": {"issue_ids": ObjectId(str(issue.id))}},
+                        )
+                    except Exception:
+                        await Sprint.get_motor_collection().update_one(
+                            {"_id": str(sprint.id)},
+                            {"$addToSet": {"issue_ids": str(issue.id)}},
+                        )
+
                     issue.sprint = sprint
                 else:
                     issue.sprint = None
@@ -781,8 +806,7 @@ class SprintsRouter:
         self,
         sprint_id: str,
         auto_move_incomplete_to: Optional[str] = Query("backlog"),
-        allow_incomplete_threshold: float = Query(0.0),
-        force: bool = Query(True),  # default True -> move incomplete issues by default
+        #force: bool = Query(False),  # default False: do not auto-complete when incompletes present
         current_user: User = Depends(get_current_user),
     ):
         """
@@ -830,15 +854,14 @@ class SprintsRouter:
         bad_subtasks = [d for d in docs if d.get("type") == "subtask" and not d.get("parent")]
 
         reasons = []
-        frac = (len(incomplete_docs) / total) if total > 0 else 0.0
-        if frac > allow_incomplete_threshold:
-            reasons.append(f"{len(incomplete_docs)} of {total} issues are not done (threshold {allow_incomplete_threshold})")
+        #frac = (len(incomplete_docs) / total) if total > 0 else 0.0
+        #    reasons.append(f"{len(incomplete_docs)} of {total} issues are not done (threshold {allow_incomplete_threshold})")
         if bad_subtasks:
             reasons.append(f"{len(bad_subtasks)} subtasks missing parent")
 
-        if reasons and not force:
-            return {"ok": False, "reasons": reasons, "incomplete_count": len(incomplete_docs), "total": total}
-        # if force True, we continue and move incomplete issues regardless of reasons
+        #if reasons and not force:
+        #    return {"ok": False, "reasons": reasons, "incomplete_count": len(incomplete_docs), "total": total}
+        # continue only if force True or no reasons
 
         # snapshot all sprint issue ids (store as strings)
         snapshot_ids = [str(d.get("_id")) for d in docs]

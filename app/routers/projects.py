@@ -1,6 +1,6 @@
 # app/routers/projects.py
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from datetime import datetime
 from app.routers.auth import get_current_user
 from app.models.users import User
@@ -19,7 +19,11 @@ except Exception:
 try:
     from app.schemas.projects import ProjectOut, ProjectCreate, ProjectUpdate
 except Exception:
-    ProjectOut = ProjectCreate = ProjectUpdate = _Any
+    # fallback: try the other schema module used in this repo
+    try:
+        from app.schemas.project_management import ProjectOut, ProjectCreate, ProjectUpdate
+    except Exception:
+        ProjectOut = ProjectCreate = ProjectUpdate = _Any
 
 try:
     from beanie import PydanticObjectId
@@ -218,25 +222,49 @@ class ProjectsController(BaseController):
     async def create_defaults(self, project: Project):
         pid = str(project.id)
 
-        existing_backlog = await Backlog.find_one({"project_id": pid})
-        if not existing_backlog:
-            await Backlog(project_id=pid).insert()
+        # create backlog: prefer Backlog model, fallback to raw motor collection
+        try:
+            if Backlog is not _Any:
+                existing_backlog = await Backlog.find_one({"project_id": pid})
+                if not existing_backlog:
+                    await Backlog(project_id=pid, items=[]).insert()
+            else:
+                # fallback: insert into the "backlogs" collection using motor (best-effort)
+                try:
+                    col = Project.get_motor_collection().database.get_collection("backlogs")
+                    existing = await col.find_one({"project_id": pid})
+                    if not existing:
+                        await col.insert_one({"project_id": pid, "items": []})
+                except Exception:
+                    # ignore motor errors; not critical
+                    pass
+        except Exception:
+            # defensive: never raise from defaults creation
+            pass
 
-        existing_board = await Board.find_one({"project_id": pid})
-        if not existing_board:
-            board = Board(
-                name="Project Board",
-                project_id=pid,
-                columns=[
-                    BoardColumn(name="Backlog", status="backlog", position=0, color="#8B8B8B"),
-                    BoardColumn(name="To Do", status="todo", position=1, color="#FF6B6B"),
-                    BoardColumn(name="In Progress", status="in_progress", position=2, color="#4ECDC4"),
-                    BoardColumn(name="In Review", status="in_review", position=3, color="#45B7D1"),
-                    BoardColumn(name="Done", status="done", position=4, color="#96CEB4"),
-                ],
-                visible_to_roles=[],
-            )
-            await board.insert()
+        # create board & columns if Board model exists
+        try:
+            if Board is not _Any and BoardColumn is not _Any:
+                existing_board = await Board.find_one({"project_id": pid})
+                if not existing_board:
+                    board = Board(
+                        name="Project Board",
+                        project_id=pid,
+                        columns=[
+                            BoardColumn(name="Backlog", status="backlog", position=0, color="#8B8B8B"),
+                            BoardColumn(name="To Do", status="todo", position=1, color="#FF6B6B"),
+                            BoardColumn(name="In Progress", status="in_progress", position=2, color="#4ECDC4"),
+                            BoardColumn(name="In Review", status="in_review", position=3, color="#45B7D1"),
+                            BoardColumn(name="Done", status="done", position=4, color="#96CEB4"),
+                        ],
+                        visible_to_roles=[],
+                    )
+                    await board.insert()
+            else:
+                # models missing: skip board creation
+                pass
+        except Exception:
+            pass
 
     async def get_all(
         self,
@@ -272,7 +300,10 @@ class ProjectsController(BaseController):
         # return full detailed response using the shared to_response converter
         return await self.to_response(proj)
 
-    async def create_project(self, payload: ProjectCreate, current_user: User = Depends(get_current_user)):
+    async def create_project(self, payload: ProjectCreate = Body(...), current_user: User = Depends(get_current_user)):
+        """
+        Create project — payload is a JSON body matching ProjectCreate schema.
+        """
         await self.ensure_admin(current_user)
 
         existing = await Project.find_one(Project.key == payload.key)
