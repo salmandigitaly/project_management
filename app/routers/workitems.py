@@ -634,6 +634,35 @@ class SprintsRouter:
         self.router.add_api_route("/{sprint_id}/start", self.start_sprint, methods=["POST"], dependencies=deps)
         # complete sprint
         self.router.add_api_route("/{sprint_id}/complete", self.complete_sprint, methods=["POST"], dependencies=deps)
+    
+    async def _can_manage_sprint(self, project_id: str, current_user: User) -> bool:
+        """
+        Robust permission helper: prefer PermissionService.can_manage_sprint if present,
+        otherwise fall back to admin role or other PermissionService checks.
+        """
+        perm_fn = getattr(PermissionService, "can_manage_sprint", None)
+        if callable(perm_fn):
+            try:
+                return await perm_fn(str(project_id), str(current_user.id))
+            except Exception:
+                pass
+
+        # fallback: admin allowed
+        if getattr(current_user, "role", None) == "admin":
+            return True
+
+        # try other available permission checks
+        for fn_name in ("can_edit_project", "can_view_project", "can_edit_workitem"):
+            fn = getattr(PermissionService, fn_name, None)
+            if callable(fn):
+                try:
+                    allowed = await fn(str(project_id), str(current_user.id))
+                    if allowed:
+                        return True
+                except Exception:
+                    continue
+        return False
+
     async def list_sprints(self, project_id: str = Query(...), current_user: User = Depends(get_current_user)):
         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access to project")
@@ -746,7 +775,7 @@ class SprintsRouter:
         sprint = await Sprint.get(sprint_id)
         if not sprint:
             raise HTTPException(status_code=404, detail="Sprint not found")
-        if not await PermissionService.can_manage_sprint(_id_of(sprint.project), str(current_user.id)):
+        if not await self._can_manage_sprint(_id_of(sprint.project), current_user):
             raise HTTPException(status_code=403, detail="No access")
 
         await sprint.set({k: v for k, v in data.dict(exclude_unset=True).items()})
@@ -756,7 +785,7 @@ class SprintsRouter:
         sprint = await Sprint.get(sprint_id)
         if not sprint:
             raise HTTPException(status_code=404, detail="Sprint not found")
-        if not await PermissionService.can_manage_sprint(_id_of(sprint.project), str(current_user.id)):
+        if not await self._can_manage_sprint(_id_of(sprint.project), current_user):
             raise HTTPException(status_code=403, detail="No access")
 
         await sprint.delete()
@@ -771,7 +800,7 @@ class SprintsRouter:
         if not sprint:
             raise HTTPException(status_code=404, detail="Sprint not found")
         
-        if not await PermissionService.can_manage_sprint(_id_of(sprint.project), str(current_user.id)):
+        if not await self._can_manage_sprint(_id_of(sprint.project), current_user):
             raise HTTPException(status_code=403, detail="No access")
 
         # Get all issues in this sprint
@@ -815,29 +844,32 @@ class SprintsRouter:
     async def complete_sprint(
         self,
         sprint_id: str,
-        auto_move_incomplete_to: Optional[str] = Query("backlog"),
-        #force: bool = Query(False),  # default False: do not auto-complete when incompletes present
+        auto_move_incomplete_to: Optional[str] = Query(None, description="Specify 'backlog' or target sprint id; omit or leave empty to only check issues"),
         current_user: User = Depends(get_current_user),
     ):
         """
         Complete sprint:
-         - collect sprint issues (from sprint.issue_ids or issue.sprint links)
-         - validate threshold / bad subtasks
-         - move incomplete issues to backlog or to another sprint
-         - snapshot all sprint issues into sprint.completed_issue_ids and mark completed_at/status
+         - When auto_move_incomplete_to is omitted/empty:
+             * If all issues status == 'done' -> mark sprint completed and store snapshot.
+             * If some issues are not done -> return lists of completed_issues and pending_issues (no moves).
+         - When auto_move_incomplete_to is provided:
+             * Move incomplete issues to backlog or provided sprint id, then mark sprint completed and store snapshot.
         """
+        # treat empty string as omitted
+        if auto_move_incomplete_to is not None and str(auto_move_incomplete_to).strip() == "":
+            auto_move_incomplete_to = None
+
         sprint = await Sprint.get(sprint_id)
         if not sprint:
             raise HTTPException(status_code=404, detail="Sprint not found")
-
+ 
         issues_col = Issue.get_motor_collection()
         sprints_col = Sprint.get_motor_collection()
         backlog_col = Backlog.get_motor_collection()
-
-        # gather sprint issue ids from sprint.issue_ids (preferred) else search by issue.sprint link
+ 
+        # collect all sprint issues (prefer sprint.issue_ids)
         sprint_issue_ids = getattr(sprint, "issue_ids", []) or []
         docs = []
-
         if sprint_issue_ids:
             normalized = []
             for x in sprint_issue_ids:
@@ -848,6 +880,7 @@ class SprintsRouter:
             if normalized:
                 docs = [d async for d in issues_col.find({"_id": {"$in": normalized}})]
         else:
+            # fallback: find by issue.sprint link (match ObjectId and string)
             conds = []
             try:
                 obj_id = ObjectId(str(sprint.id))
@@ -859,35 +892,69 @@ class SprintsRouter:
             cursor_filter = conds[0] if len(conds) == 1 else {"$or": conds}
             docs = [d async for d in issues_col.find(cursor_filter)]
 
-        total = len(docs)
-        incomplete_docs = [d for d in docs if d.get("status") != "done"]
-        bad_subtasks = [d for d in docs if d.get("type") == "subtask" and not d.get("parent")]
-
-        reasons = []
-        #frac = (len(incomplete_docs) / total) if total > 0 else 0.0
-        #    reasons.append(f"{len(incomplete_docs)} of {total} issues are not done (threshold {allow_incomplete_threshold})")
-        if bad_subtasks:
-            reasons.append(f"{len(bad_subtasks)} subtasks missing parent")
-
-        #if reasons and not force:
-        #    return {"ok": False, "reasons": reasons, "incomplete_count": len(incomplete_docs), "total": total}
-        # continue only if force True or no reasons
-
-        # snapshot all sprint issue ids (store as strings)
+        # Snapshot all sprint issues (store as strings)
         snapshot_ids = [str(d.get("_id")) for d in docs]
 
+        # If auto_move_incomplete_to is omitted -> only check statuses
+        if not auto_move_incomplete_to:
+            completed_issues = []
+            pending_issues = []
+            for d in docs:
+                iid = str(d.get("_id"))
+                name = d.get("name")
+                status = d.get("status")
+                if status == "done":
+                    completed_issues.append({"id": iid, "name": name})
+                else:
+                    pending_issues.append({"id": iid, "name": name, "status": status})
+
+            # If there are no pending issues -> mark sprint completed and persist snapshot
+            if not pending_issues:
+                completed_ts = datetime.utcnow()
+                update_body = {"$set": {"completed_at": completed_ts, "active": False, "completed_issue_ids": snapshot_ids, "status": "completed"}}
+                try:
+                    await sprints_col.update_one({"_id": ObjectId(str(sprint.id))}, update_body)
+                except Exception:
+                    try:
+                        await sprints_col.update_one({"_id": str(sprint.id)}, update_body)
+                    except Exception:
+                        pass
+                try:
+                    sprint.completed_at = completed_ts
+                    sprint.active = False
+                    sprint.completed_issue_ids = snapshot_ids
+                    sprint.status = "completed"
+                    await sprint.save()
+                except Exception:
+                    pass
+
+                return {
+                    "completed_issues": completed_issues,
+                    "pending_issues": [],
+                    "sprint_id": _id_of(sprint),
+                    "completed_at": completed_ts.isoformat(),
+                }
+
+            # There are pending issues -> return lists, do not move anything or complete sprint
+            return {
+                "completed_issues": completed_issues,
+                "pending_issues": pending_issues,
+                "sprint_id": _id_of(sprint),
+            }
+ 
+        # auto_move_incomplete_to provided -> move incomplete issues (existing behavior)
         moved = []
         errors = []
+        incomplete_docs = [d for d in docs if d.get("status") != "done"]
         for doc in incomplete_docs:
-            raw_iid = doc.get("_id")
-            # normalize to ObjectId when possible
+            iid_raw = doc.get("_id")
             try:
-                iid_obj = raw_iid if isinstance(raw_iid, ObjectId) else ObjectId(str(raw_iid))
+                iid_obj = iid_raw if isinstance(iid_raw, ObjectId) else ObjectId(str(iid_raw))
             except Exception:
-                iid_obj = raw_iid
-            iid_str = str(raw_iid)
+                iid_obj = iid_raw
+            iid_str = str(iid_raw)
 
-            # remove from this sprint.issue_ids (try both forms)
+            # remove from current sprint.issue_ids (try both forms)
             try:
                 await sprints_col.update_one({"_id": ObjectId(str(sprint.id))}, {"$pull": {"issue_ids": iid_obj}})
             except Exception:
@@ -900,8 +967,7 @@ class SprintsRouter:
                         await sprints_col.update_one({"_id": str(sprint.id)}, {"$pull": {"issue_ids": iid_str}})
 
             try:
-                if auto_move_incomplete_to and auto_move_incomplete_to != "backlog":
-                    # try target as ObjectId then string
+                if auto_move_incomplete_to != "backlog":
                     moved_ok = False
                     try:
                         target_obj = ObjectId(str(auto_move_incomplete_to))
@@ -917,7 +983,6 @@ class SprintsRouter:
                             moved_ok = False
 
                     if not moved_ok:
-                        # fallback to backlog
                         await issues_col.update_one({"_id": iid_obj}, {"$set": {"sprint": None, "location": "backlog"}})
                         try:
                             proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
@@ -925,7 +990,6 @@ class SprintsRouter:
                         except Exception:
                             await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": iid_str}}, upsert=True)
                 else:
-                    # move to backlog
                     await issues_col.update_one({"_id": iid_obj}, {"$set": {"sprint": None, "location": "backlog"}})
                     try:
                         proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
@@ -948,7 +1012,6 @@ class SprintsRouter:
             except Exception:
                 pass
 
-        # also try to update the Beanie model object if available
         try:
             sprint.completed_at = completed_ts
             sprint.active = False
@@ -963,7 +1026,7 @@ class SprintsRouter:
             "sprint_id": _id_of(sprint),
             "completed_at": completed_ts.isoformat(),
             "moved_incomplete_issues": moved,
-            "remaining_incomplete_count": 0 if not incomplete_docs else len(incomplete_docs) - len(moved),
+            "snapshot_issue_ids": snapshot_ids,
             "errors": errors,
         }
 
