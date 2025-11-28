@@ -631,8 +631,9 @@ class SprintsRouter:
         self.router.add_api_route("/", self.create_sprint, methods=["POST"], dependencies=deps)
         # register completed before the parameterized route so "/completed" doesn't match "{sprint_id}"
         self.router.add_api_route("/completed", self.list_completed_sprints, methods=["GET"], dependencies=deps)
-        # check running sprint
-        # self.router.add_api_route("/running", self.running_sprint, methods=["GET"], dependencies=deps)
+        # check running sprint (must be registered before parameterized routes)
+        self.router.add_api_route("/running", self.running_sprint, methods=["GET"], dependencies=deps)
+        self.router.add_api_route("/running/all", self.list_running_sprints, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.get_sprint, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.update_sprint, methods=["PUT"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.delete_sprint, methods=["DELETE"], dependencies=deps)
@@ -1097,6 +1098,69 @@ class SprintsRouter:
             })
         return out
 
+    async def running_sprint(self, current_user: User = Depends(get_current_user)):
+        """
+        GET /sprints/running
+        Return whether any sprint is currently running.
+        Priority:
+         1) sprint with active == True
+         2) sprint where start_date <= now <= end_date and completed_at is missing/null
+        """
+        sprints_col = Sprint.get_motor_collection()
+
+        # 1) explicit active flag
+        doc = await sprints_col.find_one({"active": True})
+        if not doc:
+            now = datetime.utcnow()
+            doc = await sprints_col.find_one({
+                "start_date": {"$lte": now},
+                "end_date": {"$gte": now},
+                "$or": [{"completed_at": {"$exists": False}}, {"completed_at": None}]
+            })
+
+        if not doc:
+            return {"sprint_running": False}
+
+        return {
+            "sprint_running": True,
+            "sprint_id": str(doc.get("_id")),
+            "sprint_name": doc.get("name"),
+        }
+    async def list_running_sprints(self, current_user: User = Depends(get_current_user)):
+        """
+        GET /sprints/running/all
+        Return a list of all running sprints (matches active OR date range & not completed).
+        """
+        sprints_col = Sprint.get_motor_collection()
+        now = datetime.utcnow()
+        query = {
+            "$or": [
+                {"active": True},
+                {
+                    "$and": [
+                        {"start_date": {"$lte": now}},
+                        {"end_date": {"$gte": now}},
+                        {"$or": [{"completed_at": {"$exists": False}}, {"completed_at": None}]}
+                    ]
+                }
+            ]
+        }
+
+        docs = [d async for d in sprints_col.find(query).sort([("start_date", 1)])]
+        out: List[Dict[str, Any]] = []
+        for d in docs:
+            out.append({
+                "sprint_running": True,
+                "sprint_id": str(d.get("_id")),
+                "sprint_name": d.get("name"),
+                "project_id": (str(d.get("project")) if d.get("project") is not None else None),
+                "start_date": d.get("start_date"),
+               "end_date": d.get("end_date"),
+            })
+        # if nothing matched return a single object for consistency or empty list per your preference
+        return out
+# ...existing code...
+
     def _doc_sprint(self, s: Sprint) -> Dict[str, Any]:
         return {
             "id": _id_of(s),
@@ -1548,16 +1612,3 @@ async def delete_feature(feature_id: str, current_user: User = Depends(get_curre
     await f.delete()
     return {"message": "Feature deleted"}
 
-# @router.get("/debug/whoami")
-# async def debug_whoami(project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
-#     """
-#     Debug: returns current user id/role and optionally whether they can view a project.
-#     Use this to confirm the token user and PermissionService behavior.
-#     """
-#     out = {
-#         "user_id": str(getattr(current_user, "id", None)),
-#         "role": getattr(current_user, "role", None),
-#     }
-#     if project_id:
-#         out["can_view_project"] = await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None)))
-#     return out
