@@ -8,6 +8,7 @@ from fastapi.security import HTTPBearer
 from typing import List
 from beanie import PydanticObjectId
 from bson import ObjectId
+from pydantic.error_wrappers import ValidationError
 
 from app.routers.auth import get_current_user
 from app.models.users import User
@@ -628,6 +629,8 @@ class SprintsRouter:
         deps = [Depends(security), Depends(get_current_user)]
         self.router.add_api_route("/", self.list_sprints, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/", self.create_sprint, methods=["POST"], dependencies=deps)
+        # register completed before the parameterized route so "/completed" doesn't match "{sprint_id}"
+        self.router.add_api_route("/completed", self.list_completed_sprints, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.get_sprint, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.update_sprint, methods=["PUT"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.delete_sprint, methods=["DELETE"], dependencies=deps)
@@ -1030,6 +1033,68 @@ class SprintsRouter:
             "errors": errors,
         }
 
+    async def list_completed_sprints(self, project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
+        """
+        GET /sprints/completed
+        - Any authenticated user can call this.
+        - Optional project_id filters results to that project.
+        """
+        sprints_col = Sprint.get_motor_collection()
+
+        # find sprints that have a completed_at timestamp (completed)
+        docs = [d async for d in sprints_col.find({"completed_at": {"$ne": None}})]
+
+        import re
+
+        def _extract_hex(s: Any) -> Optional[str]:
+            """Return 24-hex substring from s (lowercased) or None."""
+            if s is None:
+                return None
+            try:
+                # dicts like DBRef / nested docs: try common keys first
+                if isinstance(s, dict):
+                    for k in ("$id", "id", "_id"):
+                        if k in s and s[k]:
+                            try:
+                                return re.search(r"[0-9a-fA-F]{24}", str(s[k])).group(0).lower()
+                            except Exception:
+                                pass
+                    # final attempt: stringification of dict
+                    s = str(s)
+                else:
+                    s = str(s)
+            except Exception:
+                return None
+            m = re.search(r"[0-9a-fA-F]{24}", s)
+            return m.group(0).lower() if m else s
+
+        # normalize incoming project_id (may already be hex, or long form)
+        project_hex = None
+        if project_id:
+            project_hex = _extract_hex(project_id)
+
+        # filter by normalized hex string (robust across shapes)
+        if project_hex:
+            filtered = [d for d in docs if _extract_hex(d.get("project") or d.get("project_id")) == project_hex]
+        else:
+            filtered = docs
+
+        out: List[Dict[str, Any]] = []
+        for d in filtered:
+            proj_id = _extract_hex(d.get("project") or d.get("project_id"))
+            completed_ids = d.get("completed_issue_ids") or []
+            out.append({
+                "id": str(d.get("_id")),
+                "name": d.get("name"),
+                "project_id": proj_id,
+                "start_date": d.get("start_date"),
+                "end_date": d.get("end_date"),
+                "completed_at": d.get("completed_at"),
+                "completed_issue_ids": [str(i) for i in completed_ids],
+                "issue_count": len(completed_ids),
+            })
+        return out
+
     def _doc_sprint(self, s: Sprint) -> Dict[str, Any]:
         return {
             "id": _id_of(s),
@@ -1223,9 +1288,23 @@ class TimeRouter:
         if not await PermissionService.can_view_project(str(data.project_id), str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
 
-        issue = await Issue.get(str(data.issue_id))
-        if not issue:
-            raise HTTPException(status_code=404, detail="Issue not found")
+        try:
+            issue = await Issue.get(str(data.issue_id))
+        except ValidationError as e:
+            # fetch raw document to give actionable info
+            raw = await Issue.get_motor_collection().find_one({"_id": ObjectId(str(data.issue_id))})
+            detail = {
+                "msg": "Issue document failed model validation (likely a subtask missing parent)",
+                "issue_id": str(data.issue_id),
+                "pydantic_errors": e.errors(),
+                "raw_doc_snippet": {
+                    "_id": str(raw["_id"]) if raw else None,
+                    "type": raw.get("type") if raw else None,
+                    "parent": raw.get("parent") if raw else None,
+                    "name": raw.get("name") if raw else None,
+                },
+            }
+            raise HTTPException(status_code=422, detail=detail)
 
         project = await Project.get(str(data.project_id))
         if not project:
