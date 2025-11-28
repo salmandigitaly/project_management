@@ -1524,7 +1524,17 @@ async def update_feature(feature_id: str, payload: FeatureUpdate, current_user: 
         raise HTTPException(status_code=403, detail="No access")
     await f.set({k: v for k, v in payload.dict(exclude_unset=True).items()})
     await f.save()
-    return {"id": str(f.id), "name": f.name}
+    return FeatureOut(
+        id=str(f.id),
+        project_id=str(getattr(f, "project_id", None)) if getattr(f, "project_id", None) else None,
+        epic_id=str(getattr(f, "epic_id", None)) if getattr(f, "epic_id", None) else None,
+        name=getattr(f, "name", None),
+        description=getattr(f, "description", None),
+        priority=getattr(f, "priority", None),
+        status=getattr(f, "status", None),
+        created_by=str(getattr(f, "created_by", None)) if getattr(f, "created_by", None) else None,
+        created_at=getattr(f, "created_at", None),
+    )
 
 @features_router.delete("/{feature_id}")
 async def delete_feature(feature_id: str, current_user: User = Depends(get_current_user)):
