@@ -1,12 +1,13 @@
 # app/routers/boards.py
 from __future__ import annotations
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Literal
+from typing import List, Dict, Any, Optional , Literal
+import re
+from bson import ObjectId
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer
 from beanie import PydanticObjectId
-
 from app.routers.auth import get_current_user
 from app.models.users import User
 from app.models.workitems import Project, Sprint, Issue, Board, BoardColumn
@@ -335,19 +336,19 @@ class BoardsRouter:
     # -----------------------------------------------------
     async def get_project_board(self, project_id: str, current_user: User = Depends(get_current_user)):
         """
-        Robust lookup:
-         - try ObjectId and string forms and 'project_id' field
-         - if no board found, create a default board for the project (so new projects have a board)
+        Return project board (auto-create if missing) and include full issue details grouped by board columns.
+        Response shape matches requested example.
         """
-        # verify project exists
         project = await Project.get(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
         col = Board.get_motor_collection()
+        issues_col = Issue.get_motor_collection()
+        users_col = User.get_motor_collection()
+        epics_col = Epic.get_motor_collection() if "Epic" in globals() else None
 
-        # build query that matches common storage shapes
-        from bson import ObjectId
+        # find or create board (robust project shapes)
         q_variants = []
         try:
             q_variants.append({"project": ObjectId(str(project_id))})
@@ -359,7 +360,6 @@ class BoardsRouter:
 
         board_doc = await col.find_one(query)
         if not board_doc:
-            # create a sensible default board (columns can be adjusted)
             default_board = {
                 "name": "Project Board",
                 "project": ObjectId(str(project.id)) if isinstance(getattr(project, "id", None), ObjectId) else str(project.id),
@@ -374,18 +374,140 @@ class BoardsRouter:
                 "created_at": datetime.utcnow(),
             }
             res = await col.insert_one(default_board)
-            # ensure returned doc has id and project normalized
             board_doc = await col.find_one({"_id": res.inserted_id})
 
-        # normalize response (return keys expected by your API)
-        proj = board_doc.get("project") or board_doc.get("project_id")
-        proj_id = str(proj) if not isinstance(proj, dict) else str(proj.get("_id") or proj.get("$id") or proj.get("id"))
+        # --- fetch issues for project (robust match) ---
+        try:
+            pid_obj = ObjectId(str(project_id))
+        except Exception:
+            pid_obj = None
+
+        or_list = []
+        if pid_obj:
+            or_list.append({"project": pid_obj})
+            or_list.append({"project.$id": pid_obj})
+        or_list.append({"project": str(project_id)})
+        or_list.append({"project_id": str(project_id)})
+
+        raw_issues = []
+        try:
+            raw_issues = [d async for d in issues_col.find({"$or": or_list}).sort([("created_at", 1)])]
+        except Exception:
+            raw_issues = []
+
+        # collect unique assignee ids and epic ids to resolve names in bulk
+        def extract_id(v: Any) -> Optional[str]:
+            if v is None:
+                return None
+            if isinstance(v, dict):
+                for k in ("$id", "_id", "id"):
+                    if k in v and v[k]:
+                        return str(v[k])
+                return None
+            return str(v)
+
+        assignee_ids = set()
+        epic_ids = set()
+        for r in raw_issues:
+            a = extract_id(r.get("assignee"))
+            e = extract_id(r.get("epic"))
+            if a:
+                assignee_ids.add(a)
+            if e:
+                epic_ids.add(e)
+
+        # helper to build mixed _id list (ObjectId where possible)
+        def norm_id_list(ids: List[str]) -> List[Any]:
+            out = []
+            for s in ids:
+                if not s:
+                    continue
+                if re.search(r"[0-9a-fA-F]{24}$", s):
+                    try:
+                        out.append(ObjectId(s))
+                        continue
+                    except Exception:
+                        pass
+                out.append(str(s))
+            return out
+
+        users_map: Dict[str, Dict[str, str]] = {}
+        if assignee_ids:
+            vals = norm_id_list(list(assignee_ids))
+            try:
+                cursor = users_col.find({"_id": {"$in": vals}})
+                async for u in cursor:
+                    uid = extract_id(u.get("_id"))
+                    fullname = u.get("full_name") or u.get("name") or u.get("email")
+                    users_map[str(uid)] = {"id": str(uid), "full_name": fullname}
+            except Exception:
+                pass
+
+        epics_map: Dict[str, str] = {}
+        if epic_ids and epics_col:
+            vals = norm_id_list(list(epic_ids))
+            try:
+                cursor = epics_col.find({"_id": {"$in": vals}})
+                async for ep in cursor:
+                    eid = extract_id(ep.get("_id"))
+                    ep_name = ep.get("name") or ep.get("title")
+                    if eid:
+                        epics_map[str(eid)] = ep_name
+            except Exception:
+                pass
+
+        # prepare columns from board_doc, keep original order
+        board_columns = board_doc.get("columns", [])
+        def slugify(s: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
+
+        response_columns: List[Dict[str, Any]] = []
+        for c in board_columns:
+            col_status = c.get("status") or slugify(c.get("name") or "")
+            col_id = f"col_{slugify(col_status or c.get('name') or str(c.get('position','')))}"
+            # collect issues for this column by matching status (robust)
+            col_issues: List[Dict[str, Any]] = []
+            for r in raw_issues:
+                issue_status = r.get("status") or ""
+                if str(issue_status).lower() != str(col_status).lower():
+                    continue
+                iid = extract_id(r.get("_id"))
+                ass_id = extract_id(r.get("assignee"))
+                epic_id = extract_id(r.get("epic"))
+                created_at = r.get("created_at")
+                try:
+                    created_iso = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+                except Exception:
+                    created_iso = str(created_at)
+                issue_obj: Dict[str, Any] = {
+                    "id": str(iid),
+                    "name": r.get("name") or r.get("title") or r.get("summary"),
+                    "type": r.get("type"),
+                    "epic_name": epics_map.get(str(epic_id)) if epic_id else None,
+                    "created_at": created_iso,
+                    "status": issue_status,
+                    "description": r.get("description"),
+                }
+                if ass_id:
+                    user_info = users_map.get(str(ass_id), {"id": str(ass_id), "full_name": None})
+                    issue_obj["assigned_user"] = user_info
+                col_issues.append(issue_obj)
+
+            response_columns.append({
+                "column_info": {"id": col_id, "name": c.get("name"), "status": col_status},
+                "issues": col_issues,
+            })
+
+        proj_id = extract_id(board_doc.get("project") or board_doc.get("project_id") or project_id)
         return {
-            "id": str(board_doc.get("_id")),
-            "name": board_doc.get("name"),
-            "project_id": proj_id,
-            "columns": board_doc.get("columns", []),
-            "visible_to_roles": board_doc.get("visible_to_roles", []),
+            "id": str(proj_id),
+            "name": getattr(project, "name", board_doc.get("name")),
+            "description": getattr(project, "description", "") if project else board_doc.get("description"),
+            "columns": {
+                "board": {
+                    "columns": response_columns
+                }
+            }
         }
 
     # -----------------------------------------------------

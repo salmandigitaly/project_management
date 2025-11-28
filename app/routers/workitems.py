@@ -631,6 +631,8 @@ class SprintsRouter:
         self.router.add_api_route("/", self.create_sprint, methods=["POST"], dependencies=deps)
         # register completed before the parameterized route so "/completed" doesn't match "{sprint_id}"
         self.router.add_api_route("/completed", self.list_completed_sprints, methods=["GET"], dependencies=deps)
+        # check running sprint
+        # self.router.add_api_route("/running", self.running_sprint, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.get_sprint, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.update_sprint, methods=["PUT"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.delete_sprint, methods=["DELETE"], dependencies=deps)
