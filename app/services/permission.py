@@ -1,4 +1,4 @@
-from typing import Iterable
+from typing import Optional, Iterable
 
 from app.models.users import User
 from app.models.workitems import Project, Issue
@@ -57,7 +57,20 @@ class PermissionService:
         return False
 
     @staticmethod
+    async def _is_employee_or_admin(user_id: Optional[str]) -> bool:
+        """Return True for users with role 'admin' or 'employee'."""
+        if not user_id:
+            return False
+        try:
+            u = await User.get(str(user_id))
+            return getattr(u, "role", None) in ("admin", "employee")
+        except Exception:
+            return False
+
+    @staticmethod
     async def can_view_project(project_id: str, user_id: str) -> bool:
+        if await PermissionService._is_employee_or_admin(user_id):
+            return True
         if await PermissionService._is_admin(user_id):
             return True
         proj = await Project.get(project_id)
@@ -71,6 +84,8 @@ class PermissionService:
 
     @staticmethod
     async def can_edit_project(project_id: str, user_id: str) -> bool:
+        if await PermissionService._is_employee_or_admin(user_id):
+            return True
         if await PermissionService._is_admin(user_id):
             return True
         proj = await Project.get(project_id)
@@ -79,10 +94,12 @@ class PermissionService:
         return await PermissionService._is_project_owner_or_member(proj, user_id)
 
     @staticmethod
-    async def can_edit_workitem(workitem_id: str, user_id: str) -> bool:
+    async def can_edit_workitem(issue_id: str, user_id: str) -> bool:
+        if await PermissionService._is_employee_or_admin(user_id):
+            return True
         if await PermissionService._is_admin(user_id):
             return True
-        issue = await Issue.get(workitem_id)
+        issue = await Issue.get(issue_id)
         if not issue:
             return False
         creator = getattr(issue, "created_by", None)
@@ -100,6 +117,8 @@ class PermissionService:
     async def can_comment(issue_id: str, user_id: str) -> bool:
         if await PermissionService._is_admin(user_id):
             return True
+        if await PermissionService._is_employee_or_admin(user_id):
+            return True
         issue = await Issue.get(issue_id)
         if not issue:
             return False
@@ -107,3 +126,14 @@ class PermissionService:
         if proj_id and await PermissionService.can_view_project(proj_id, user_id):
             return True
         return False
+
+    @staticmethod
+    async def can_manage_sprint(project_id: str, user_id: str) -> bool:
+        if await PermissionService._is_employee_or_admin(user_id):
+            return True
+        if await PermissionService._is_admin(user_id):
+            return True
+        proj = await Project.get(project_id)
+        if not proj:
+            return False
+        return await PermissionService._is_project_owner_or_member(proj, user_id)

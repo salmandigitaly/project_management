@@ -114,13 +114,13 @@ async def health_check():
     return {"status": "healthy"}
 
 # temporary debug endpoint — remove when done
-@app.get("/debug/can_view/{project_id}")
-async def debug_can_view(project_id: str, current_user = Depends(get_current_user)):
-    return {
-        "user_id": str(getattr(current_user, "id", None)),
-        "role": getattr(current_user, "role", None),
-        "can_view": await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None)))
-    }
+# @app.get("/debug/can_view/{project_id}")
+# async def debug_can_view(project_id: str, current_user = Depends(get_current_user)):
+#     return {
+#         "user_id": str(getattr(current_user, "id", None)),
+#         "role": getattr(current_user, "role", None),
+#         "can_view": await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None)))
+#     }
 
 # NOTE: removed inline DB update that ran at import time.
 # If you need to add a user to a project for testing, run a separate script or use a protected endpoint.

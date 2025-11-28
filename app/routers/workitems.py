@@ -1457,16 +1457,16 @@ async def delete_feature(feature_id: str, current_user: User = Depends(get_curre
     await f.delete()
     return {"message": "Feature deleted"}
 
-@router.get("/debug/whoami")
-async def debug_whoami(project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
-    """
-    Debug: returns current user id/role and optionally whether they can view a project.
-    Use this to confirm the token user and PermissionService behavior.
-    """
-    out = {
-        "user_id": str(getattr(current_user, "id", None)),
-        "role": getattr(current_user, "role", None),
-    }
-    if project_id:
-        out["can_view_project"] = await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None)))
-    return out
+# @router.get("/debug/whoami")
+# async def debug_whoami(project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
+#     """
+#     Debug: returns current user id/role and optionally whether they can view a project.
+#     Use this to confirm the token user and PermissionService behavior.
+#     """
+#     out = {
+#         "user_id": str(getattr(current_user, "id", None)),
+#         "role": getattr(current_user, "role", None),
+#     }
+#     if project_id:
+#         out["can_view_project"] = await PermissionService.can_view_project(project_id, str(getattr(current_user, "id", None)))
+#     return out
