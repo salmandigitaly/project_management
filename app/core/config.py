@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "JIRA Clone"
+    PROJECT_NAME: str = "HRMS"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
 

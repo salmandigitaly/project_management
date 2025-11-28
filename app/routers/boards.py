@@ -333,31 +333,60 @@ class BoardsRouter:
     # -----------------------------------------------------
     # PROJECT BOARD
     # -----------------------------------------------------
-    async def get_project_board(
-        self,
-        project_id: str = Query(...),
-        current_user: User = Depends(get_current_user)
-    ) -> Dict[str, Any]:
-
-        if not await PermissionService.can_view_project(project_id, str(current_user.id)):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to project")
-
+    async def get_project_board(self, project_id: str, current_user: User = Depends(get_current_user)):
+        """
+        Robust lookup:
+         - try ObjectId and string forms and 'project_id' field
+         - if no board found, create a default board for the project (so new projects have a board)
+        """
+        # verify project exists
         project = await Project.get(project_id)
         if not project:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+            raise HTTPException(status_code=404, detail="Project not found")
 
-        # FIXED: Use proper Beanie query syntax
-        issues = await Issue.find(
-            Issue.project.id == PydanticObjectId(project_id),
-            Issue.location == "board"
-        ).to_list()
+        col = Board.get_motor_collection()
 
-        return await self._build_board_payload(
-            board_name=f"{project.name} — Board",
-            project_id=project_id,
-            sprint_meta=None,
-            issues=issues
-        )
+        # build query that matches common storage shapes
+        from bson import ObjectId
+        q_variants = []
+        try:
+            q_variants.append({"project": ObjectId(str(project_id))})
+        except Exception:
+            pass
+        q_variants.append({"project": str(project_id)})
+        q_variants.append({"project_id": str(project_id)})
+        query = {"$or": q_variants} if len(q_variants) > 1 else q_variants[0]
+
+        board_doc = await col.find_one(query)
+        if not board_doc:
+            # create a sensible default board (columns can be adjusted)
+            default_board = {
+                "name": "Project Board",
+                "project": ObjectId(str(project.id)) if isinstance(getattr(project, "id", None), ObjectId) else str(project.id),
+                "columns": [
+                    {"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
+                    {"name": "To Do", "status": "todo", "position": 1, "color": "#FF6B6B"},
+                    {"name": "In Progress", "status": "in_progress", "position": 2, "color": "#4ECDC4"},
+                    {"name": "In Review", "status": "in_review", "position": 3, "color": "#45B7D1"},
+                    {"name": "Done", "status": "done", "position": 4, "color": "#96CEB4"},
+                ],
+                "visible_to_roles": [],
+                "created_at": datetime.utcnow(),
+            }
+            res = await col.insert_one(default_board)
+            # ensure returned doc has id and project normalized
+            board_doc = await col.find_one({"_id": res.inserted_id})
+
+        # normalize response (return keys expected by your API)
+        proj = board_doc.get("project") or board_doc.get("project_id")
+        proj_id = str(proj) if not isinstance(proj, dict) else str(proj.get("_id") or proj.get("$id") or proj.get("id"))
+        return {
+            "id": str(board_doc.get("_id")),
+            "name": board_doc.get("name"),
+            "project_id": proj_id,
+            "columns": board_doc.get("columns", []),
+            "visible_to_roles": board_doc.get("visible_to_roles", []),
+        }
 
     # -----------------------------------------------------
     # BACKLOG BOARD

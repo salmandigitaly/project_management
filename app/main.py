@@ -39,7 +39,7 @@ except Exception:
     except Exception:
         sprints_router = None
 
-app = FastAPI(title="Project Management")  # or existing app
+app = FastAPI(title="Project Management(HRMS)")  # or existing app
 
 # CORS
 app.add_middleware(
@@ -57,7 +57,7 @@ def custom_openapi():
     openapi_schema = get_openapi(
         title=settings.PROJECT_NAME,
         version=settings.VERSION,
-        description="JIRA Clone API with JWT Authentication",
+        description="HRMS API with JWT Authentication",
         routes=app.routes,
     )
     openapi_schema.setdefault("components", {}).setdefault("securitySchemes", {})
@@ -107,7 +107,7 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    return {"message": "JIRA Clone API", "version": settings.VERSION}
+    return {"message": "HRMS API", "version": settings.VERSION}
 
 @app.get("/health")
 async def health_check():
