@@ -5,20 +5,18 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
-from app.core.config import settings
 from app.core.database import init_db
 from app.routers.boards import *
 # Routers that actually exist now
 from app.routers.auth import auth_router, get_current_user
 from app.routers.users import users_router
 from app.routers.workitems import (
-    epics_router, issues_router, sprints_router, comments_router,
+    epics_router, issues_router, comments_router,
     links_router, time_router, features_router
 )
+# prefer explicit sprint router from dedicated module (avoid overriding it below)
+from app.routers.sprint import sprints_router
 from app.routers.projects import *
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
 # add these imports
 from app.services.permission import PermissionService
 try:
@@ -30,14 +28,6 @@ except Exception:
         from app.routers.employees import router as employees_router
     except Exception:
         employees_router = None
-
-try:
-    from app.routers.workitems import sprints_router
-except Exception:
-    try:
-        from app.routers.workitems import router as sprints_router
-    except Exception:
-        sprints_router = None
 
 app = FastAPI(title="Project Management(HRMS)")  # or existing app
 
@@ -84,6 +74,7 @@ app.include_router(auth_router, prefix=api_prefix)
 app.include_router(users_router, prefix=api_prefix)
 app.include_router(epics_router, prefix=api_prefix)
 app.include_router(issues_router, prefix=api_prefix)
+# ensure the sprint router that defines fixed paths (like /sprints/completed) is the one imported above
 app.include_router(sprints_router, prefix=api_prefix)
 app.include_router(comments_router, prefix=api_prefix)
 app.include_router(links_router, prefix=api_prefix)
