@@ -10,7 +10,7 @@ from fastapi.security import HTTPBearer
 from beanie import PydanticObjectId
 from app.routers.auth import get_current_user
 from app.models.users import User
-from app.models.workitems import Project, Sprint, Issue, Board, BoardColumn
+from app.models.workitems import Project, Sprint, Issue, Board, BoardColumn, Epic
 from app.schemas.project_management import ColumnCreate, ColumnUpdate
 from app.services.permission import PermissionService
 

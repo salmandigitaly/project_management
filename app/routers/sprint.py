@@ -530,42 +530,29 @@ class SprintsRouter:
             })
         return out
 
-    async def running_sprint(self, current_user: User = Depends(get_current_user)):
+    # ...existing code...
+    async def running_sprint(self, project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
         """
         GET /sprints/running
-        Return whether any sprint is currently running.
-        Priority:
-         1) sprint with active == True
-         2) sprint where start_date <= now <= end_date and completed_at is missing/null
+        If project_id provided, return a running sprint for that project (first match).
+        Otherwise return any running sprint.
         """
         sprints_col = Sprint.get_motor_collection()
 
-        # 1) explicit active flag
-        doc = await sprints_col.find_one({"active": True})
-        if not doc:
-            now = datetime.utcnow()
-            doc = await sprints_col.find_one({
-                "start_date": {"$lte": now},
-                "end_date": {"$gte": now},
-                "$or": [{"completed_at": {"$exists": False}}, {"completed_at": None}]
-            })
+        def _proj_clause(pid: str):
+            clauses = []
+            try:
+                pid_obj = ObjectId(str(pid))
+                clauses.append({"project": pid_obj})
+                clauses.append({"project.$id": pid_obj})
+            except Exception:
+                pass
+            clauses.append({"project": str(pid)})
+            clauses.append({"project_id": str(pid)})
+            return {"$or": clauses}
 
-        if not doc:
-            return {"sprint_running": False}
-
-        return {
-            "sprint_running": True,
-            "sprint_id": str(doc.get("_id")),
-            "sprint_name": doc.get("name"),
-        }
-    async def list_running_sprints(self, current_user: User = Depends(get_current_user)):
-        """
-        GET /sprints/running/all
-        Return a list of all running sprints (matches active OR date range & not completed).
-        """
-        sprints_col = Sprint.get_motor_collection()
         now = datetime.utcnow()
-        query = {
+        base = {
             "$or": [
                 {"active": True},
                 {
@@ -577,6 +564,67 @@ class SprintsRouter:
                 }
             ]
         }
+
+        query = {"$and": [base, _proj_clause(project_id)]} if project_id else base
+
+        doc = await sprints_col.find_one(query)
+        if not doc:
+            return {"sprint_running": False}
+
+        return {
+            "sprint_running": True,
+            "sprint_id": str(doc.get("_id")),
+            "sprint_name": doc.get("name"),
+        }
+
+    async def list_running_sprints(self, project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
+        """
+        GET /sprints/running/all
+        Return all running sprints; if project_id provided, return running sprints for that project.
+        """
+        sprints_col = Sprint.get_motor_collection()
+        now = datetime.utcnow()
+
+        def _proj_clause(pid: str):
+            clauses = []
+            try:
+                pid_obj = ObjectId(str(pid))
+                clauses.append({"project": pid_obj})
+                clauses.append({"project.$id": pid_obj})
+            except Exception:
+                pass
+            clauses.append({"project": str(pid)})
+            clauses.append({"project_id": str(pid)})
+            return {"$or": clauses}
+
+        base = {
+            "$or": [
+                {"active": True},
+                {
+                    "$and": [
+                        {"start_date": {"$lte": now}},
+                        {"end_date": {"$gte": now}},
+                        {"$or": [{"completed_at": {"$exists": False}}, {"completed_at": None}]}
+                    ]
+                }
+            ]
+        }
+
+        query = {"$and": [base, _proj_clause(project_id)]} if project_id else base
+
+        docs = [d async for d in sprints_col.find(query).sort([("start_date", 1)])]
+        out: List[Dict[str, Any]] = []
+        for d in docs:
+            out.append({
+                "sprint_running": True,
+                "sprint_id": str(d.get("_id")),
+                "sprint_name": d.get("name"),
+                "project_id": (str(d.get("project")) if d.get("project") is not None else None),
+                "start_date": d.get("start_date"),
+                "end_date": d.get("end_date"),
+            })
+        return out
+# ...existing code...
 
         docs = [d async for d in sprints_col.find(query).sort([("start_date", 1)])]
         out: List[Dict[str, Any]] = []

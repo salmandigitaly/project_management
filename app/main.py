@@ -11,11 +11,12 @@ from app.routers.boards import *
 from app.routers.auth import auth_router, get_current_user
 from app.routers.users import users_router
 from app.routers.workitems import (
-    epics_router, issues_router, comments_router,
+    epics_router, comments_router,
     links_router, time_router, features_router
 )
 # prefer explicit sprint router from dedicated module (avoid overriding it below)
 from app.routers.sprint import sprints_router
+from app.routers.issues import issues_router
 from app.routers.projects import *
 # add these imports
 from app.services.permission import PermissionService
