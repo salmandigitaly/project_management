@@ -73,25 +73,25 @@ class BoardsRouter:
             "/sprint/{sprint_id}", self.get_sprint_board, methods=["GET"],
             dependencies=deps, response_model=Dict[str, Any]
         )
-        # COLUMN MANAGEMENT APIs
+        # COLUMN MANAGEMENT APIs - use board_id instead of project_id
         self.router.add_api_route(
-            "/{project_id}/columns", self.get_columns, methods=["GET"],
+            "/{board_id}/columns", self.get_columns, methods=["GET"],
             dependencies=deps, response_model=Dict[str, Any]
         )
         self.router.add_api_route(
-            "/{project_id}/columns", self.add_column, methods=["POST"],
+            "/{board_id}/columns", self.add_column, methods=["POST"],
             dependencies=deps, response_model=Dict[str, Any]
         )
         self.router.add_api_route(
-            "/{project_id}/columns/{column_position}", self.update_column, methods=["PUT"],
+            "/{board_id}/columns/{column_position}", self.update_column, methods=["PUT"],
             dependencies=deps, response_model=Dict[str, Any]
         )
         self.router.add_api_route(
-            "/{project_id}/columns/{column_position}", self.delete_column, methods=["DELETE"],
+            "/{board_id}/columns/{column_position}", self.delete_column, methods=["DELETE"],
             dependencies=deps, response_model=Dict[str, Any]
         )
         self.router.add_api_route(
-            "/{project_id}/columns/reorder", self.reorder_columns, methods=["PATCH"],
+            "/{board_id}/columns/reorder", self.reorder_columns, methods=["PATCH"],
             dependencies=deps, response_model=Dict[str, Any]
         )
 
@@ -100,16 +100,16 @@ class BoardsRouter:
     # -----------------------------------------------------
     async def get_columns(
         self,
-        project_id: str,
+        board_id: str,
         current_user: User = Depends(get_current_user)
     ) -> Dict[str, Any]:
         
-        if not await PermissionService.can_view_project(project_id, str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access to project")
-
-        board = await Board.find_one({"project_id": project_id})
+        board, project_id = await self._resolve_board_and_project(board_id)
         if not board:
             raise HTTPException(status_code=404, detail="Board not found for this project")
+
+        if not project_id or not await PermissionService.can_view_project(project_id, str(current_user.id)):
+            raise HTTPException(status_code=403, detail="No access to project")
 
         columns_data = []
         for col in board.columns:
@@ -130,17 +130,17 @@ class BoardsRouter:
     # -----------------------------------------------------
     async def add_column(
         self,
-        project_id: str,
+        board_id: str,
         column_data: ColumnCreate,
         current_user: User = Depends(get_current_user)
     ) -> Dict[str, Any]:
         
-        if not await PermissionService.can_edit_project(project_id, str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access to edit project")
-
-        board = await Board.find_one({"project_id": project_id})
+        board, project_id = await self._resolve_board_and_project(board_id)
         if not board:
             raise HTTPException(status_code=404, detail="Board not found for this project")
+
+        if not project_id or not await PermissionService.can_edit_project(project_id, str(current_user.id)):
+            raise HTTPException(status_code=403, detail="No access to edit project")
 
         # Check if column with same status already exists
         existing_status = any(col.status == column_data.status for col in board.columns)
@@ -184,18 +184,18 @@ class BoardsRouter:
     # -----------------------------------------------------
     async def update_column(
         self,
-        project_id: str,
+        board_id: str,
         column_position: int,
         column_data: ColumnUpdate,
         current_user: User = Depends(get_current_user)
     ) -> Dict[str, Any]:
         
-        if not await PermissionService.can_edit_project(project_id, str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access to edit project")
-
-        board = await Board.find_one({"project_id": project_id})
+        board, project_id = await self._resolve_board_and_project(board_id)
         if not board:
             raise HTTPException(status_code=404, detail="Board not found for this project")
+
+        if not project_id or not await PermissionService.can_edit_project(project_id, str(current_user.id)):
+            raise HTTPException(status_code=403, detail="No access to edit project")
 
         # Find column by position
         column_index = None
@@ -249,17 +249,17 @@ class BoardsRouter:
     # -----------------------------------------------------
     async def delete_column(
         self,
-        project_id: str,
+        board_id: str,
         column_position: int,
         current_user: User = Depends(get_current_user)
     ) -> Dict[str, Any]:
         
-        if not await PermissionService.can_edit_project(project_id, str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access to edit project")
-
-        board = await Board.find_one({"project_id": project_id})
+        board, project_id = await self._resolve_board_and_project(board_id)
         if not board:
             raise HTTPException(status_code=404, detail="Board not found for this project")
+
+        if not project_id or not await PermissionService.can_edit_project(project_id, str(current_user.id)):
+            raise HTTPException(status_code=403, detail="No access to edit project")
 
         # Find column by position
         column_index = None
@@ -291,17 +291,17 @@ class BoardsRouter:
     # -----------------------------------------------------
     async def reorder_columns(
         self,
-        project_id: str,
+        board_id: str,
         reorder_data: Dict[str, Any],
         current_user: User = Depends(get_current_user)
     ) -> Dict[str, Any]:
         
-        if not await PermissionService.can_edit_project(project_id, str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access to edit project")
-
-        board = await Board.find_one({"project_id": project_id})
+        board, project_id = await self._resolve_board_and_project(board_id)
         if not board:
             raise HTTPException(status_code=404, detail="Board not found for this project")
+
+        if not project_id or not await PermissionService.can_edit_project(project_id, str(current_user.id)):
+            raise HTTPException(status_code=403, detail="No access to edit project")
 
         new_order = reorder_data.get("new_order")
         if not new_order or not isinstance(new_order, list):
@@ -647,6 +647,59 @@ class BoardsRouter:
             },
             "sprint": sprint_meta
         }
+
+    async def _resolve_board_and_project(self, board_id: str) -> tuple[Board, Optional[str]]:
+        """
+        Resolve Board by id and return (board, project_id_str)
+        """
+        board = None
+        # Try direct Beanie get by id
+        try:
+            board = await Board.get(board_id)
+        except Exception:
+            pass
+
+        # fallback: try PydanticObjectId then motor collection
+        if not board:
+            try:
+                board = await Board.get(PydanticObjectId(board_id))
+            except Exception:
+                pass
+
+        if not board:
+            # last resort: motor collection lookup by ObjectId
+            try:
+                col = Board.get_motor_collection()
+                doc = await col.find_one({"_id": ObjectId(board_id)})
+                if doc:
+                    try:
+                        board = await Board.get(str(doc.get("_id")))
+                    except Exception:
+                        # construct minimal Board-like object not expected, but handle gracefully
+                        board = Board.parse_obj(doc) if hasattr(Board, "parse_obj") else None
+            except Exception:
+                board = None
+
+        if not board:
+            return None, None
+
+        # extract project id from board (support Link, ObjectId, or string)
+        project_id = None
+        try:
+            proj = getattr(board, "project", None)
+            if proj is None:
+                proj = getattr(board, "project_id", None)
+            # Link/document reference
+            if hasattr(proj, "id"):
+                project_id = str(proj.id)
+            elif isinstance(proj, (ObjectId,)):
+                project_id = str(proj)
+            elif isinstance(proj, str):
+                project_id = proj
+        except Exception:
+            project_id = None
+
+        return board, project_id
 
 
 boards_router = BoardsRouter().router
