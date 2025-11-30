@@ -648,18 +648,21 @@ class BoardsRouter:
             "sprint": sprint_meta
         }
 
+# ...existing code...
     async def _resolve_board_and_project(self, board_id: str) -> tuple[Board, Optional[str]]:
         """
         Resolve Board by id and return (board, project_id_str)
+        Accepts either a board _id or a project id (backward-compatible).
+        If a project id is provided and no board exists, create the default board.
         """
         board = None
-        # Try direct Beanie get by id
+        # Try direct Beanie get by id (board_id as board._id)
         try:
             board = await Board.get(board_id)
         except Exception:
             pass
 
-        # fallback: try PydanticObjectId then motor collection
+        # fallback: try PydanticObjectId then motor collection (board_id as board._id)
         if not board:
             try:
                 board = await Board.get(PydanticObjectId(board_id))
@@ -667,7 +670,7 @@ class BoardsRouter:
                 pass
 
         if not board:
-            # last resort: motor collection lookup by ObjectId
+            # last resort: motor collection lookup by ObjectId for board._id
             try:
                 col = Board.get_motor_collection()
                 doc = await col.find_one({"_id": ObjectId(board_id)})
@@ -675,8 +678,53 @@ class BoardsRouter:
                     try:
                         board = await Board.get(str(doc.get("_id")))
                     except Exception:
-                        # construct minimal Board-like object not expected, but handle gracefully
                         board = Board.parse_obj(doc) if hasattr(Board, "parse_obj") else None
+            except Exception:
+                board = None
+
+        # If still not found, maybe the caller passed a project id — try to find board by project
+        if not board:
+            try:
+                # try project stored as ObjectId or string in board documents
+                q_variants = []
+                try:
+                    q_variants.append({"project": ObjectId(str(board_id))})
+                except Exception:
+                    pass
+                q_variants.append({"project": str(board_id)})
+                q_variants.append({"project_id": str(board_id)})
+                query = {"$or": q_variants} if len(q_variants) > 1 else q_variants[0]
+                col = Board.get_motor_collection()
+                doc = await col.find_one(query)
+                if doc:
+                    try:
+                        board = await Board.get(str(doc.get("_id")))
+                    except Exception:
+                        board = Board.parse_obj(doc) if hasattr(Board, "parse_obj") else None
+            except Exception:
+                board = None
+
+        # If still not found but a Project exists with that id, create default board (auto-create)
+        if not board:
+            try:
+                project = await Project.get(board_id)
+                if project:
+                    col = Board.get_motor_collection()
+                    default_board = {
+                        "name": "Project Board",
+                        "project": ObjectId(str(project.id)) if isinstance(getattr(project, "id", None), ObjectId) else str(project.id),
+                        "columns": [
+                            {"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
+                            {"name": "To Do", "status": "todo", "position": 1, "color": "#FF6B6B"},
+                            {"name": "In Progress", "status": "in_progress", "position": 2, "color": "#4ECDC4"},
+                            {"name": "In Review", "status": "in_review", "position": 3, "color": "#45B7D1"},
+                            {"name": "Done", "status": "done", "position": 4, "color": "#96CEB4"},
+                        ],
+                        "visible_to_roles": [],
+                        "created_at": datetime.utcnow(),
+                    }
+                    res = await col.insert_one(default_board)
+                    board = await Board.get(str(res.inserted_id))
             except Exception:
                 board = None
 
@@ -700,7 +748,7 @@ class BoardsRouter:
             project_id = None
 
         return board, project_id
-
+# ...existing code...
 
 boards_router = BoardsRouter().router
 
