@@ -459,33 +459,6 @@ time_router = TimeRouter().router
 
 router = APIRouter()
 
-@router.get("/sprints/{sprint_id}", response_model=SprintOut)
-async def get_sprint(sprint_id: str, user=Depends(get_current_user)):
-    sprint = await Sprint.get(PydanticObjectId(sprint_id))
-    if not sprint:
-        raise HTTPException(status_code=404, detail="Sprint not found")
-    data = sprint.dict()
-    data["id"] = str(sprint.id)
-    # ensure issue_ids are strings
-    data["issue_ids"] = [str(i) for i in getattr(sprint, "issue_ids", [])]
-    # project is a Link; expose project id string
-    # use _id_of to consistently produce project id string from Link or doc
-    data["project_id"] = _id_of(sprint.project) or str(data.get("project"))
-    return data
-
-@router.get("/sprints/", response_model=List[SprintOut])
-async def list_sprints(page: int = 1, limit: int = 50, user=Depends(get_current_user)):
-    items = []
-    async for s in Sprint.find().skip((page-1)*limit).limit(limit):
-        d = s.dict()
-        d["id"] = str(s.id)
-        d["issue_ids"] = [str(i) for i in getattr(s, "issue_ids", [])]
-        try:
-            d["project_id"] = str(s.project.id)
-        except Exception:
-            d["project_id"] = str(d.get("project"))
-        items.append(d)
-    return items
 
 @router.get("/projects/", response_model=List[Dict[str, Any]])
 async def list_projects(skip: int = 0, limit: int = 100, current_user: User = Depends(get_current_user)):

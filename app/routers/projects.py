@@ -1,5 +1,5 @@
 # app/routers/projects.py
-
+from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from datetime import datetime
 from app.routers.auth import get_current_user
@@ -17,7 +17,7 @@ except Exception:
 # safe imports for Pydantic models / helpers that may live in other modules.
 # If your project defines these in different modules, replace the try/except targets.
 try:
-    from app.schemas.projects import ProjectOut, ProjectCreate, ProjectUpdate
+    from app.schemas.project_management import ProjectOut, ProjectCreate, ProjectUpdate
 except Exception:
     # fallback: try the other schema module used in this repo
     try:
@@ -31,7 +31,7 @@ except Exception:
     PydanticObjectId = _Any
 
 try:
-    from app.models.boards import Backlog, Board, BoardColumn
+    from app.models.workitems import Backlog, Board, BoardColumn
 except Exception:
     Backlog = Board = BoardColumn = _Any
 
@@ -114,7 +114,7 @@ class ProjectsController(BaseController):
             result.update({str(k): v for k, v in member_roles_dict.items()})
         return result
 
-    async def to_response(self, project: Project) -> ProjectOut:
+    async def to_response(self, project: Project) -> _Any:
         """
         Convert Beanie Document (Links -> ids) and include detailed member & user info.
         """
