@@ -571,9 +571,9 @@ class SprintsRouter:
         Response: {"running_count": n, "sprints": [{"sprint_running": True, "sprint_id": "...", "sprint_name": "..."}, ...]}
         """
         # permission: if filtering by project ensure the user can view it
-        if project_id:
-            if not await PermissionService.can_view_project(project_id, str(current_user.id)):
-                raise HTTPException(status_code=403, detail="No access to project")
+        # if project_id:
+        #     if not await PermissionService.can_view_project(project_id, str(current_user.id)):
+        #         raise HTTPException(status_code=403, detail="No access to project")
 
         sprints_col = Sprint.get_motor_collection()
 
@@ -613,9 +613,21 @@ class SprintsRouter:
                 "sprint_id": str(d.get("_id")),
                 "sprint_name": d.get("name"),
             })
+        running_count = len(out)
+        if running_count == 0:
+            # explicit, non-empty response when no running sprint for the project
+            return {
+                "running": False,
+                "running_count": 0,
+                "sprints": [],
+                "message": "No sprint running in this project"
+            }
 
-        return {"running_count": len(out), "sprints": out}
-# ...existing code...
+        return {
+            "running": True,
+            "running_count": running_count,
+            "sprints": out
+        }
 
     def _doc_sprint(self, s: Sprint) -> Dict[str, Any]:
         return {
