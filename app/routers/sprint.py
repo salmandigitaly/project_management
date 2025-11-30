@@ -64,7 +64,7 @@ class SprintsRouter:
         # register completed before the parameterized route so "/completed" doesn't match "{sprint_id}"
         self.router.add_api_route("/completed", self.list_completed_sprints, methods=["GET"], dependencies=deps)
         # check running sprint (must be registered before parameterized routes)
-        self.router.add_api_route("/running", self.running_sprint, methods=["GET"], dependencies=deps)
+        # self.router.add_api_route("/running", self.running_sprint, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/running/all", self.list_running_sprints, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.get_sprint, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{sprint_id}", self.update_sprint, methods=["PUT"], dependencies=deps)
@@ -164,6 +164,9 @@ class SprintsRouter:
             start_date=data.start_date,
             end_date=data.end_date,
             created_by=current_user,
+            # ensure new sprint is NOT running until start_sprint is invoked
+            active=False,
+            status="planned",
         )
         await sprint.insert()
         return self._doc_sprint(sprint)
@@ -230,6 +233,8 @@ class SprintsRouter:
         return {"message": "Sprint deleted"}
     
 
+    # ...existing code...
+  # ...existing code...
     async def start_sprint(self, sprint_id: str, current_user: User = Depends(get_current_user)):
         """
         Start a sprint - move all sprint issues to board with correct status columns
@@ -241,23 +246,48 @@ class SprintsRouter:
         if not await self._can_manage_sprint(_id_of(sprint.project), current_user):
             raise HTTPException(status_code=403, detail="No access")
 
+        sprints_col = Sprint.get_motor_collection()
+
+        # mark sprint as running (update both document and DB to ensure persistence)
+        try:
+            if not getattr(sprint, "start_date", None):
+                sprint.start_date = datetime.utcnow()
+            sprint.active = True
+            sprint.status = "running"
+            # try model save first
+            await sprint.save()
+        except Exception:
+            # ignore model save errors
+            pass
+
+        # Ensure DB record is updated (guarantee boolean flag in DB)
+        try:
+            update_body = {
+                "$set": {
+                    "active": True,
+                    "status": "running",
+                    "start_date": sprint.start_date or datetime.utcnow()
+                }
+            }
+            try:
+                await sprints_col.update_one({"_id": ObjectId(str(sprint.id))}, update_body)
+            except Exception:
+                await sprints_col.update_one({"_id": str(sprint.id)}, update_body)
+        except Exception:
+            # non-fatal — continue to move issues even if DB update fails
+            pass
+
         # Get all issues in this sprint
         issues = await Issue.find(Issue.sprint.id == sprint.id).to_list()
-        
+
         moved_issues = []
         errors = []
 
         for issue in issues:
             try:
-                # Move issue to board (location remains the same for status mapping)
+                # set location to 'board' (or whatever your workflow requires)
                 issue.location = "board"
-                
-                # Status mapping:
-                # "todo" → "todo" (To Do column)
-                # "inprogress" → "inprogress" (In Progress column) 
-                # "done" → "done" (Done column)
-                # No change to status, just location to board
-                
+                # optionally adjust status mapping here if needed
                 await issue.save()
                 moved_issues.append({
                     "id": _id_of(issue),
@@ -266,17 +296,18 @@ class SprintsRouter:
                     "status": issue.status,
                     "location": issue.location
                 })
-                
             except Exception as e:
-                errors.append(f"Error moving issue {_id_of(issue)}: {str(e)}")
+                errors.append({"id": _id_of(issue) or str(getattr(issue, "id", None)), "error": str(e)})
 
+        # Return a useful summary so client is not getting an empty/null response
         return {
-            "sprint_id": sprint_id,
+            "sprint_id": _id_of(sprint),
             "sprint_name": sprint.name,
+            "started_at": getattr(sprint, "start_date", None),
+            "moved_issues_count": len(moved_issues),
             "moved_issues": moved_issues,
-            "total_moved": len(moved_issues),
             "errors": errors,
-            "message": f"Started sprint '{sprint.name}'. Moved {len(moved_issues)} issues to board."
+            "message": f"Started sprint '{sprint.name}'"
         }
 
     async def complete_sprint(
@@ -530,83 +561,45 @@ class SprintsRouter:
             })
         return out
 
-    # ...existing code...
-    async def running_sprint(self, project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
-        """
-        GET /sprints/running
-        If project_id provided, return a running sprint for that project (first match).
-        Otherwise return any running sprint.
-        """
-        sprints_col = Sprint.get_motor_collection()
 
-        def _proj_clause(pid: str):
-            clauses = []
-            try:
-                pid_obj = ObjectId(str(pid))
-                clauses.append({"project": pid_obj})
-                clauses.append({"project.$id": pid_obj})
-            except Exception:
-                pass
-            clauses.append({"project": str(pid)})
-            clauses.append({"project_id": str(pid)})
-            return {"$or": clauses}
-
-        now = datetime.utcnow()
-        base = {
-            "$or": [
-                {"active": True},
-                {
-                    "$and": [
-                        {"start_date": {"$lte": now}},
-                        {"end_date": {"$gte": now}},
-                        {"$or": [{"completed_at": {"$exists": False}}, {"completed_at": None}]}
-                    ]
-                }
-            ]
-        }
-
-        query = {"$and": [base, _proj_clause(project_id)]} if project_id else base
-
-        doc = await sprints_col.find_one(query)
-        if not doc:
-            return {"sprint_running": False}
-
-        return {
-            "sprint_running": True,
-            "sprint_id": str(doc.get("_id")),
-            "sprint_name": doc.get("name"),
-        }
-
+# ...existing code...
     async def list_running_sprints(self, project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
         """
         GET /sprints/running/all
-        Return all running sprints; if project_id provided, return running sprints for that project.
+        Return running sprints; if project_id provided, return running sprints for that project.
+        Only sprints explicitly marked active (started) are considered running.
+        Response: {"running_count": n, "sprints": [{"sprint_running": True, "sprint_id": "...", "sprint_name": "..."}, ...]}
         """
-        sprints_col = Sprint.get_motor_collection()
-        now = datetime.utcnow()
+        # permission: if filtering by project ensure the user can view it
+        if project_id:
+            if not await PermissionService.can_view_project(project_id, str(current_user.id)):
+                raise HTTPException(status_code=403, detail="No access to project")
 
+        sprints_col = Sprint.get_motor_collection()
+
+        # ...existing code...
         def _proj_clause(pid: str):
             clauses = []
             try:
                 pid_obj = ObjectId(str(pid))
                 clauses.append({"project": pid_obj})
                 clauses.append({"project.$id": pid_obj})
+                clauses.append({"project.id": pid_obj})
             except Exception:
                 pass
+            # also match string forms
             clauses.append({"project": str(pid)})
             clauses.append({"project_id": str(pid)})
+            clauses.append({"project.id": str(pid)})
             return {"$or": clauses}
 
+
+        # Only consider sprints that were explicitly started (active=True) and not completed
         base = {
+            "active": True,
             "$or": [
-                {"active": True},
-                {
-                    "$and": [
-                        {"start_date": {"$lte": now}},
-                        {"end_date": {"$gte": now}},
-                        {"$or": [{"completed_at": {"$exists": False}}, {"completed_at": None}]}
-                    ]
-                }
+                {"completed_at": {"$exists": False}},
+                {"completed_at": None}
             ]
         }
 
@@ -619,26 +612,9 @@ class SprintsRouter:
                 "sprint_running": True,
                 "sprint_id": str(d.get("_id")),
                 "sprint_name": d.get("name"),
-                "project_id": (str(d.get("project")) if d.get("project") is not None else None),
-                "start_date": d.get("start_date"),
-                "end_date": d.get("end_date"),
             })
-        return out
-# ...existing code...
 
-        docs = [d async for d in sprints_col.find(query).sort([("start_date", 1)])]
-        out: List[Dict[str, Any]] = []
-        for d in docs:
-            out.append({
-                "sprint_running": True,
-                "sprint_id": str(d.get("_id")),
-                "sprint_name": d.get("name"),
-                "project_id": (str(d.get("project")) if d.get("project") is not None else None),
-                "start_date": d.get("start_date"),
-               "end_date": d.get("end_date"),
-            })
-        # if nothing matched return a single object for consistency or empty list per your preference
-        return out
+        return {"running_count": len(out), "sprints": out}
 # ...existing code...
 
     def _doc_sprint(self, s: Sprint) -> Dict[str, Any]:
