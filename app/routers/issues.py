@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
 from fastapi.security import HTTPBearer
 from typing import List
 from beanie import PydanticObjectId
@@ -67,6 +67,8 @@ class IssuesRouter:
         self.router.add_api_route("/{issue_id}/subtasks", self.add_subtask, methods=["POST"], dependencies=deps)
         self.router.add_api_route("/move-multiple", self.move_multiple_issues, methods=["POST"], dependencies=deps)
         self.router.add_api_route("/sprints/{sprint_id}/issues/{issue_id}", self.remove_issue_from_sprint, methods=["DELETE"], dependencies=deps)
+        # assign/unassign an issue (PATCH) - body: {"assignee_id": "<user_id>" } or {"assignee_id": null} to unassign
+        self.router.add_api_route("/{issue_id}/assign", self.assign_issue, methods=["PATCH"], dependencies=deps)
 
     async def list_issues(
         self,
@@ -430,6 +432,39 @@ class IssuesRouter:
         await issue.save()
 
         return {"message": "Issue removed", "issue_id": issue_id, "sprint_id": sprint_id}
+
+    async def assign_issue(
+        self,
+        issue_id: str,
+        assignee_id: Optional[str] = Body(None, embed=True),
+        current_user: User = Depends(get_current_user)
+    ):
+        """
+        PATCH /issues/{issue_id}/assign
+        Body: { "assignee_id": "<user_id>" }  or { "assignee_id": null } to unassign
+        """
+        issue = await Issue.get(issue_id)
+        if not issue:
+            raise HTTPException(status_code=404, detail="Issue not found")
+
+        # permission: require edit rights on the workitem
+        if not await PermissionService.can_edit_workitem(_id_of(issue), str(current_user.id)):
+            raise HTTPException(status_code=403, detail="No access to assign this issue")
+
+        if assignee_id is None:
+            # unassign
+            issue.assignee = None
+        else:
+            user = await User.get(str(assignee_id))
+            if not user:
+                raise HTTPException(status_code=404, detail="Assignee user not found")
+            issue.assignee = user
+
+        issue.updated_by = current_user
+        issue.updated_at = datetime.utcnow()
+        await issue.save()
+
+        return self._doc_issue(issue)
 
     def _doc_issue(self, i: Issue) -> Dict[str, Any]:
         return {

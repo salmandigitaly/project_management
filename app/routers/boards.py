@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional , Literal
 import re
 from bson import ObjectId
+from bson.dbref import DBRef
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer
@@ -404,8 +405,22 @@ class BoardsRouter:
 
         # collect unique assignee ids and epic ids to resolve names in bulk
         def extract_id(v: Any) -> Optional[str]:
+            """Normalize various DB shapes (ObjectId, DBRef, dict, Link) into plain string id."""
             if v is None:
                 return None
+            # direct ObjectId
+            if isinstance(v, ObjectId):
+                return str(v)
+            # bson DBRef
+            if isinstance(v, DBRef):
+                return str(v.id)
+            # beanie / pydantic object with .id attr
+            if hasattr(v, "id"):
+                try:
+                    return str(getattr(v, "id"))
+                except Exception:
+                    pass
+            # dict-like shapes from motor driver
             if isinstance(v, dict):
                 for k in ("$id", "_id", "id"):
                     if k in v and v[k]:
@@ -424,20 +439,43 @@ class BoardsRouter:
                 epic_ids.add(e)
 
         # helper to build mixed _id list (ObjectId where possible)
+     # ...existing code...
         def norm_id_list(ids: List[str]) -> List[Any]:
-            out = []
-            for s in ids:
-                if not s:
+            out: List[Any] = []
+            for item in ids:
+                if not item:
                     continue
-                if re.search(r"[0-9a-fA-F]{24}$", s):
+                # already an ObjectId
+                if isinstance(item, ObjectId):
+                    out.append(item)
+                    continue
+                # DBRef -> ObjectId
+                if isinstance(item, DBRef):
+                    try:
+                        out.append(ObjectId(str(item.id)))
+                        continue
+                    except Exception:
+                        out.append(str(item))
+                        continue
+                s = str(item)
+                # exact 24-hex -> ObjectId
+                if re.fullmatch(r"[0-9a-fA-F]{24}", s):
                     try:
                         out.append(ObjectId(s))
                         continue
                     except Exception:
                         pass
-                out.append(str(s))
+                # find 24-hex substring
+                m = re.search(r"([0-9a-fA-F]{24})", s)
+                if m:
+                    try:
+                        out.append(ObjectId(m.group(1)))
+                        continue
+                    except Exception:
+                        pass
+                out.append(s)
             return out
-
+# ...existing code...
         users_map: Dict[str, Dict[str, str]] = {}
         if assignee_ids:
             vals = norm_id_list(list(assignee_ids))
@@ -491,7 +529,8 @@ class BoardsRouter:
                     "id": str(iid),
                     "name": r.get("name") or r.get("title") or r.get("summary"),
                     "type": r.get("type"),
-                    "epic_name": epics_map.get(str(epic_id)) if epic_id else None,
+                    # provide epic id (not epic name)
+                    "epic_id": str(epic_id) if epic_id else None,
                     "created_at": created_iso,
                     "status": issue_status,
                     "description": r.get("description"),
