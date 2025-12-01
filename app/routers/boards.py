@@ -10,7 +10,7 @@ from fastapi.security import HTTPBearer
 from beanie import PydanticObjectId
 from app.routers.auth import get_current_user
 from app.models.users import User
-from app.models.workitems import Project, Sprint, Issue, Board, BoardColumn
+from app.models.workitems import Project, Sprint, Issue, Board, BoardColumn , Epic
 from app.schemas.project_management import ColumnCreate, ColumnUpdate
 from app.services.permission import PermissionService
 
@@ -18,6 +18,11 @@ security = HTTPBearer()
 
 ColumnStatus = Literal["todo", "inprogress", "done"]
 
+# add: normalize function for status comparisons used below
+def _normalize_status(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 def _issue_to_minimal_dict(issue: Issue) -> Dict[str, Any]:
     # Helper function to safely get ID from Link or Document
@@ -364,7 +369,7 @@ class BoardsRouter:
                 "name": "Project Board",
                 "project": ObjectId(str(project.id)) if isinstance(getattr(project, "id", None), ObjectId) else str(project.id),
                 "columns": [
-                    {"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
+                    #{"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
                     {"name": "To Do", "status": "todo", "position": 1, "color": "#FF6B6B"},
                     {"name": "In Progress", "status": "in_progress", "position": 2, "color": "#4ECDC4"},
                     {"name": "In Review", "status": "in_review", "position": 3, "color": "#45B7D1"},
@@ -389,9 +394,11 @@ class BoardsRouter:
         or_list.append({"project": str(project_id)})
         or_list.append({"project_id": str(project_id)})
 
+        # Only include issues that are on the board (location == "board")
         raw_issues = []
         try:
-            raw_issues = [d async for d in issues_col.find({"$or": or_list}).sort([("created_at", 1)])]
+            query = {"$and": [{"$or": or_list}, {"location": "board"}]}
+            raw_issues = [d async for d in issues_col.find(query).sort([("created_at", 1)])]
         except Exception:
             raw_issues = []
 
@@ -469,7 +476,8 @@ class BoardsRouter:
             col_issues: List[Dict[str, Any]] = []
             for r in raw_issues:
                 issue_status = r.get("status") or ""
-                if str(issue_status).lower() != str(col_status).lower():
+                # compare normalized forms to handle "in_progress" vs "inprogress" etc.
+                if _normalize_status(issue_status) != _normalize_status(col_status):
                     continue
                 iid = extract_id(r.get("_id"))
                 ass_id = extract_id(r.get("assignee"))
@@ -563,7 +571,11 @@ class BoardsRouter:
         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
 
-        issues = await Issue.find(Issue.sprint.id == PydanticObjectId(sprint_id)).to_list()
+        # only show sprint issues that were moved to the board (location == "board")
+        issues = await Issue.find(
+            Issue.sprint.id == PydanticObjectId(sprint_id),
+            Issue.location == "board"
+        ).to_list()
 
         sprint_meta = {
             "id": str(sprint.id),
@@ -616,8 +628,13 @@ class BoardsRouter:
         for issue in issues:
             status = issue.status
 
+            # match using normalized status form
             target_col = next(
-                (cid for cid, c in columns.items() if c["column_info"]["status"] == status),
+                (
+                    cid
+                    for cid, c in columns.items()
+                    if _normalize_status(c["column_info"]["status"]) == _normalize_status(status)
+                ),
                 None
             )
 
@@ -648,7 +665,6 @@ class BoardsRouter:
             "sprint": sprint_meta
         }
 
-# ...existing code...
     async def _resolve_board_and_project(self, board_id: str) -> tuple[Board, Optional[str]]:
         """
         Resolve Board by id and return (board, project_id_str)
@@ -694,6 +710,7 @@ class BoardsRouter:
                 q_variants.append({"project": str(board_id)})
                 q_variants.append({"project_id": str(board_id)})
                 query = {"$or": q_variants} if len(q_variants) > 1 else q_variants[0]
+
                 col = Board.get_motor_collection()
                 doc = await col.find_one(query)
                 if doc:
@@ -704,53 +721,12 @@ class BoardsRouter:
             except Exception:
                 board = None
 
-        # If still not found but a Project exists with that id, create default board (auto-create)
-        if not board:
-            try:
-                project = await Project.get(board_id)
-                if project:
-                    col = Board.get_motor_collection()
-                    default_board = {
-                        "name": "Project Board",
-                        "project": ObjectId(str(project.id)) if isinstance(getattr(project, "id", None), ObjectId) else str(project.id),
-                        "columns": [
-                            {"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
-                            {"name": "To Do", "status": "todo", "position": 1, "color": "#FF6B6B"},
-                            {"name": "In Progress", "status": "in_progress", "position": 2, "color": "#4ECDC4"},
-                            {"name": "In Review", "status": "in_review", "position": 3, "color": "#45B7D1"},
-                            {"name": "Done", "status": "done", "position": 4, "color": "#96CEB4"},
-                        ],
-                        "visible_to_roles": [],
-                        "created_at": datetime.utcnow(),
-                    }
-                    res = await col.insert_one(default_board)
-                    board = await Board.get(str(res.inserted_id))
-            except Exception:
-                board = None
+        return board, (str(board.project_id) if board and board.project_id else None)
 
-        if not board:
-            return None, None
-
-        # extract project id from board (support Link, ObjectId, or string)
-        project_id = None
-        try:
-            proj = getattr(board, "project", None)
-            if proj is None:
-                proj = getattr(board, "project_id", None)
-            # Link/document reference
-            if hasattr(proj, "id"):
-                project_id = str(proj.id)
-            elif isinstance(proj, (ObjectId,)):
-                project_id = str(proj)
-            elif isinstance(proj, str):
-                project_id = proj
-        except Exception:
-            project_id = None
-
-        return board, project_id
-# ...existing code...
-
+# expose router instance for other modules to import
 boards_router = BoardsRouter().router
+# keep legacy name if other code expects `router`
+router = boards_router
 
 
 

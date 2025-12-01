@@ -51,15 +51,43 @@ class Project(Document):
     @before_event(Delete)
     async def _cascade_delete_children(self):
         pid = getattr(self, "id", None)
-        if pid:
-            await Epic.find(Epic.project.id == pid).delete(link_rule=DeleteRules.DELETE_LINKS)
-            await Sprint.find(Sprint.project.id == pid).delete(link_rule=DeleteRules.DELETE_LINKS)
-            await Issue.find(Issue.project.id == pid).delete(link_rule=DeleteRules.DELETE_LINKS)
-            await Comment.find(Comment.project.id == pid).delete()
-            await LinkedWorkItem.find(
-                (LinkedWorkItem.issue.project.id == pid) | (LinkedWorkItem.linked_issue.project.id == pid)
-            ).delete()
-            await TimeEntry.find(TimeEntry.project.id == pid).delete()
+        if not pid:
+            return
+
+        pid_str = str(pid)
+
+        async def _delete_by_query(model, query):
+            try:
+                items = await model.find(query).to_list()
+                for it in items:
+                    try:
+                        await it.delete()
+                    except Exception:
+                        # continue deleting others even if one fails
+                        pass
+            except Exception:
+                pass
+
+        # try object-id queries first, then fall back to string forms
+        try:
+            oid = PydanticObjectId(pid_str)
+            await _delete_by_query(Epic, Epic.project.id == oid)
+            await _delete_by_query(Sprint, Sprint.project.id == oid)
+            await _delete_by_query(Issue, Issue.project.id == oid)
+            await _delete_by_query(Comment, Comment.project.id == oid)
+            await _delete_by_query(LinkedWorkItem,
+                                   (LinkedWorkItem.issue.project.id == oid) | (LinkedWorkItem.linked_issue.project.id == oid))
+            await _delete_by_query(TimeEntry, TimeEntry.project.id == oid)
+        except Exception:
+            await _delete_by_query(Epic, {"project": pid_str})
+            await _delete_by_query(Epic, {"project_id": pid_str})
+            await _delete_by_query(Sprint, {"project": pid_str})
+            await _delete_by_query(Sprint, {"project_id": pid_str})
+            await _delete_by_query(Issue, {"project": pid_str})
+            await _delete_by_query(Issue, {"project_id": pid_str})
+            await _delete_by_query(Comment, {"project": pid_str})
+            await _delete_by_query(LinkedWorkItem, {"$or": [{"issue.project": pid_str}, {"linked_issue.project": pid_str}]})
+            await _delete_by_query(TimeEntry, {"project": pid_str})
 
     class Settings:
         name = "projects"
@@ -297,3 +325,50 @@ class Feature(Document):
 
     class Settings:
         name = "features"
+
+@before_event(Delete)
+async def _cascade_delete_children(sender, document, **kwargs):
+    """
+    When a Project is deleted, remove child Epics/Issues/Sprints/Backlogs individually
+    so Beanie's per-document delete() runs (avoids motor.delete_many receiving unexpected kwargs).
+    """
+    try:
+        pid = getattr(document, "id", None) or getattr(document, "_id", None)
+        if not pid:
+            return
+        pid_str = str(pid)
+
+        async def _delete_by_query(model, query):
+            try:
+                items = await model.find(query).to_list()
+                for it in items:
+                    try:
+                        await it.delete()
+                    except Exception:
+                        # continue deleting others even if one fails
+                        pass
+            except Exception:
+                # ignore query/delete failures for resilience
+                pass
+
+        # Try object-id form first, then string forms
+        try:
+            oid = PydanticObjectId(pid_str)
+            await _delete_by_query(Epic, Epic.project.id == oid)
+            await _delete_by_query(Issue, Issue.project.id == oid)
+            await _delete_by_query(Sprint, Sprint.project.id == oid)
+            await _delete_by_query(Backlog, Backlog.project.id == oid)
+        except Exception:
+            # fallback to string-based queries
+            await _delete_by_query(Epic, {"project": pid_str})
+            await _delete_by_query(Epic, {"project_id": pid_str})
+            await _delete_by_query(Issue, {"project": pid_str})
+            await _delete_by_query(Issue, {"project_id": pid_str})
+            await _delete_by_query(Sprint, {"project": pid_str})
+            await _delete_by_query(Sprint, {"project_id": pid_str})
+            await _delete_by_query(Backlog, {"project": pid_str})
+            await _delete_by_query(Backlog, {"project_id": pid_str})
+
+    except Exception:
+        # swallow to avoid failing the parent delete flow
+        pass
