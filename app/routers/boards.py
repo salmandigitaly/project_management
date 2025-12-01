@@ -451,7 +451,7 @@ class BoardsRouter:
                 pass
 
         epics_map: Dict[str, str] = {}
-        if epic_ids and epics_col:
+        if epic_ids and epics_col is not None:
             vals = norm_id_list(list(epic_ids))
             try:
                 cursor = epics_col.find({"_id": {"$in": vals}})
