@@ -10,7 +10,8 @@ from typing import List, Optional, Dict, Any as _Any, Any
 from app.services.permission import PermissionService
 # try to import related models for populating lists; fallback to _Any if missing
 try:
-    from app.models.workitems import Epic, Sprint, Issue
+    from app.models.workitems import Epic, Sprint, Issue , Feature
+    from app.models.workitems import Comment, TimeEntry, LinkedWorkItem
 except Exception:
     Epic = Sprint = Issue = _Any
 
@@ -41,6 +42,10 @@ except Exception:
     UserSummary = MemberSummary = _Any
 
 from bson import ObjectId
+from bson.dbref import DBRef
+import logging
+
+logger = logging.getLogger(__name__)
 
 # helper: normalize a Link / object / id to string id
 def _link_id(link):
@@ -251,7 +256,7 @@ class ProjectsController(BaseController):
                         name="Project Board",
                         project_id=pid,
                         columns=[
-                            BoardColumn(name="Backlog", status="backlog", position=0, color="#8B8B8B"),
+                            # BoardColumn(name="Backlog", status="backlog", position=0, color="#8B8B8B"),
                             BoardColumn(name="To Do", status="todo", position=1, color="#FF6B6B"),
                             BoardColumn(name="In Progress", status="in_progress", position=2, color="#4ECDC4"),
                             BoardColumn(name="In Review", status="in_review", position=3, color="#45B7D1"),
@@ -369,12 +374,81 @@ class ProjectsController(BaseController):
         return await self.to_response(project)
 
     async def delete_project(self, project_id: str, current_user: User = Depends(get_current_user)):
-        await self.ensure_admin(current_user)
         project = await Project.get(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
+
+        # permission check (keep yours)
+        # robust permission check: try several possible method names on PermissionService,
+        # fall back to admin role if none found.
+        perm_fn = None
+        for name in ("can_manage_project", "can_manage_projects", "can_delete_project", "can_manage", "can_view_project"):
+            candidate = getattr(PermissionService, name, None)
+            if callable(candidate):
+                perm_fn = candidate
+                break
+
+        if callable(perm_fn):
+            try:
+                # common signature: (project_id, user_id)
+                allowed = await perm_fn(project_id, str(current_user.id))
+            except TypeError:
+                # try swapped args if signature differs
+                try:
+                    allowed = await perm_fn(str(current_user.id), project_id)
+                except Exception:
+                    allowed = False
+            except Exception:
+                allowed = False
+        else:
+            allowed = getattr(current_user, "role", None) == "admin"
+
+        if not allowed:
+            raise HTTPException(status_code=403, detail="No access to delete project")
+
+        # --- cascade delete related documents explicitly (motor delete_many) ---
+        async def _cascade_delete_by_model(model):
+            try:
+                col = model.get_motor_collection()
+            except Exception:
+                return
+            qs = []
+            try:
+                oid = ObjectId(str(project_id))
+                qs += [{"project": oid}, {"project.$id": oid}, {"project.id": oid}, {"project": DBRef("projects", oid)}]
+            except Exception:
+                pass
+            qs += [{"project": str(project_id)}, {"project_id": str(project_id)}, {"project.id": str(project_id)}, {"project.$id": str(project_id)}]
+            # run delete_many for all query shapes
+            for q in qs:
+                try:
+                    await col.delete_many(q)
+                except Exception:
+                    pass
+            # ensure project_id cleanup
+            try:
+                await col.delete_many({"project_id": str(project_id)})
+            except Exception:
+                pass
+
+        # models to clean up (imported at top of file)
+        cleanup = [Epic, Feature, Issue, Sprint, Board, Backlog, Comment, TimeEntry, LinkedWorkItem]
+        for m in cleanup:
+            try:
+                await _cascade_delete_by_model(m)
+            except Exception as e:
+                logger.exception("Cascade error for %s: %s", getattr(m, "__name__", str(m)), str(e))
+
+        # finally remove the project document
         await project.delete()
-        return {"message": "Project and related data deleted successfully"}
+
+        # ensure child documents removed (force cleanup to cover shapes missed by handlers)
+        try:
+            await _delete_project_children(project_id)
+        except Exception as e:
+            logger.exception("Project cleanup failed: %s", str(e))
+
+        return {"message": "Project deleted"}
 
 
 # helper to load a single user summary

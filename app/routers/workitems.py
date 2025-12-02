@@ -2,13 +2,15 @@
 from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
+import re
+from bson import ObjectId
+from bson.dbref import DBRef
+from pydantic.error_wrappers import ValidationError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from fastapi.security import HTTPBearer
 from typing import List
 from beanie import PydanticObjectId
-from bson import ObjectId
-from pydantic.error_wrappers import ValidationError
 
 from app.routers.auth import get_current_user
 from app.models.users import User
@@ -48,6 +50,53 @@ def _id_of(link_or_doc) -> Optional[str]:
     # raw ObjectId-like
     try:
         return str(link_or_doc)
+    except Exception:
+        return None
+
+async def _resolve_linked_id(link_obj) -> Optional[str]:
+    """
+    Return a string id for various link shapes:
+      - beanie Link proxy with .id
+      - Link proxy that needs .fetch()
+      - DBRef, ObjectId, plain string
+    """
+    if link_obj is None:
+        return None
+    # direct ObjectId
+    try:
+        if isinstance(link_obj, ObjectId):
+            return str(link_obj)
+    except Exception:
+        pass
+    # DBRef
+    try:
+        if isinstance(link_obj, DBRef):
+            return str(link_obj.id)
+    except Exception:
+        pass
+    # beanie Link with .id attr
+    try:
+        if hasattr(link_obj, "id") and getattr(link_obj, "id"):
+            return str(getattr(link_obj, "id"))
+    except Exception:
+        pass
+    # try fetch() (Link proxy)
+    try:
+        if hasattr(link_obj, "fetch"):
+            fetched = await link_obj.fetch()
+            if fetched is not None:
+                fid = getattr(fetched, "id", None) or getattr(fetched, "_id", None)
+                if fid:
+                    return str(fid)
+    except Exception:
+        pass
+    # fallback: string with embedded ObjectId
+    try:
+        s = str(link_obj)
+        m = re.search(r"([0-9a-fA-F]{24})", s)
+        if m:
+            return m.group(1)
+        return s
     except Exception:
         return None
 
@@ -100,14 +149,12 @@ class EpicsRouter:
         epic = await Epic.get(epic_id)
         if not epic:
             raise HTTPException(status_code=404, detail="Epic not found")
-        
-        # Fetch the project to get its ID properly
-        project = await epic.project.fetch()
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        if not await PermissionService.can_view_project(str(project.id), str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
+
+        # resolve project id robustly (project may be Link proxy or DBRef)
+        project = epic.project
+        project_id = await _resolve_linked_id(project)
+        if not project_id or not await PermissionService.can_view_project(str(project_id), str(current_user.id)):
+             raise HTTPException(status_code=403, detail="No access to project")
 
         # Get all issues for this epic
         issues = await Issue.find(Issue.epic.id == epic.id).to_list()
@@ -159,8 +206,11 @@ class EpicsRouter:
         epic = await Epic.get(epic_id)
         if not epic:
             raise HTTPException(status_code=404, detail="Epic not found")
-        if not await PermissionService.can_edit_project(str(epic.project.id), str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
+
+        # resolve epic.project to an id (Link/DBRef/ObjectId/string)
+        project_id = await _resolve_linked_id(epic.project)
+        if not project_id or not await PermissionService.can_edit_project(str(project_id), str(current_user.id)):
+            raise HTTPException(status_code=403, detail="No access to project")
 
         await epic.delete()
         return {"message": "Epic deleted"}
