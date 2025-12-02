@@ -16,6 +16,7 @@ from app.models.users import User  # existing User model
 from bson import ObjectId
 from bson.dbref import DBRef
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,9 @@ class Issue(Document):
     name: str
     description: Optional[str] = None
     priority: Priority = "medium"
-    status: Status = "todo"
+    #status: Status = "todo"
+    status: str = Field(default="todo")
+
     assignee: Optional[Link[User]] = None
 
     parent: Optional[Link["Issue"]] = None  # if subtask
@@ -241,6 +244,16 @@ class Issue(Document):
                 await te.delete()
             except Exception:
                 pass
+
+    @validator("status", pre=True, always=True)
+    def _normalize_status(cls, v):
+        if v is None:
+            return "todo"
+        s = str(v).strip().lower()
+        # convert common variants to normalized token (e.g. "in progress" -> "in_progress")
+        s = re.sub(r"[^a-z0-9]+", "_", s)
+        s = s.strip("_")
+        return s or "todo"
 
     class Settings:
         name = "issues"

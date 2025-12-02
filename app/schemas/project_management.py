@@ -221,8 +221,41 @@ class IssueBase(BaseModel):
         return parent
 
 
-class IssueCreate(IssueBase):
-    created_by: Optional[PydanticObjectId] = None
+class IssueCreate(BaseModel):
+    project_id: PydanticObjectId
+    epic_id: Optional[PydanticObjectId] = None
+    sprint_id: Optional[PydanticObjectId] = None
+    feature_id: Optional[PydanticObjectId] = None
+    type: IssueType
+    name: str
+    description: Optional[str] = None
+    priority: Priority = "medium"
+    status: Optional[str] = "todo"
+    assignee_id: Optional[PydanticObjectId] = None
+    parent_id: Optional[PydanticObjectId] = None
+    story_points: Optional[int] = None
+    estimated_hours: Optional[float] = None
+    location: Literal["backlog", "sprint", "board"] = "backlog"
+
+    @validator("story_points")
+    def validate_points(cls, v, values):
+        if v is None:
+            return v
+        if v not in FIB_POINTS:
+            raise ValueError(f"story_points must be one of {sorted(FIB_POINTS)}")
+        t = values.get("type")
+        if t != "story":
+            raise ValueError("story_points allowed only for type=story")
+        return v
+
+    @validator("parent_id")
+    def validate_parent(cls, parent, values):
+        t: Optional[IssueType] = values.get("type")
+        if t == "subtask" and parent is None:
+            raise ValueError("subtask requires parent")
+        if t != "subtask" and parent is not None:
+            raise ValueError("parent allowed only when type=subtask")
+        return parent
 
 
 class IssueUpdate(BaseModel):
@@ -232,7 +265,7 @@ class IssueUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[Priority] = None
-    status: Optional[Status] = None
+    status: Optional[str] = None
     assignee_id: Optional[PydanticObjectId] = None
     parent_id: Optional[PydanticObjectId] = None
     story_points: Optional[int] = None
@@ -250,8 +283,8 @@ class IssueUpdate(BaseModel):
         return v
 
 
-class IssueOut(IDModel, TimeStampMixin):
-    key: Optional[str] = None
+class IssueOut(BaseModel):
+    id: str
     project_id: PydanticObjectId
     epic_id: Optional[PydanticObjectId] = None
     sprint_id: Optional[PydanticObjectId] = None
@@ -260,7 +293,7 @@ class IssueOut(IDModel, TimeStampMixin):
     name: str
     description: Optional[str] = None
     priority: Priority
-    status: Status
+    status: str
     assignee_id: Optional[PydanticObjectId] = None
     parent_id: Optional[PydanticObjectId] = None
     story_points: Optional[int] = None
