@@ -12,7 +12,7 @@ from pydantic.error_wrappers import ValidationError
 from app.routers.auth import get_current_user
 from app.models.users import User
 from app.models.workitems import (
-    Project, Epic, Feature, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem, Backlog
+    Project, Epic, Feature, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem, Backlog ,Board
 )
 from app.schemas.project_management import (
     EpicCreate, EpicUpdate, EpicOut,
@@ -349,16 +349,35 @@ class SprintsRouter:
             if normalized:
                 docs = [d async for d in issues_col.find({"_id": {"$in": normalized}})]
         else:
-            # fallback: find by issue.sprint link (match ObjectId and string)
+            # fallback: find by issue.sprint link (match many common shapes: ObjectId, DBRef, nested $id/id, and string)
             conds = []
             try:
                 obj_id = ObjectId(str(sprint.id))
             except Exception:
                 obj_id = None
             if obj_id:
-                conds.append({"sprint": obj_id})
-            conds.append({"sprint": str(sprint.id)})
-            cursor_filter = conds[0] if len(conds) == 1 else {"$or": conds}
+                # match when sprint stored as ObjectId, nested $id or id, or DBRef
+                conds.extend([
+                    {"sprint": obj_id},
+                    {"sprint.$id": obj_id},
+                    {"sprint.id": obj_id},
+                    {"sprint": DBRef("sprints", obj_id)},
+                ])
+            # always include string forms (some records store link as plain string)
+            conds.extend([
+                {"sprint": str(sprint.id)},
+                {"sprint.$id": str(sprint.id)},
+                {"sprint.id": str(sprint.id)},
+            ])
+            # deduplicate and build $or
+            unique = []
+            seen = set()
+            for c in conds:
+                key = str(c)
+                if key not in seen:
+                    unique.append(c)
+                    seen.add(key)
+            cursor_filter = unique[0] if len(unique) == 1 else {"$or": unique}
             docs = [d async for d in issues_col.find(cursor_filter)]
 
         # Snapshot all sprint issues (store as strings)
@@ -394,6 +413,35 @@ class SprintsRouter:
                     sprint.completed_issue_ids = snapshot_ids
                     sprint.status = "completed"
                     await sprint.save()
+                except Exception:
+                    pass
+
+                # Move ALL sprint issues off the board: clear sprint link and set location=backlog
+                try:
+                    # build list of ObjectId values where possible
+                    ids_obj = []
+                    for d in docs:
+                        _id_raw = d.get("_id")
+                        try:
+                            ids_obj.append(ObjectId(str(_id_raw)))
+                        except Exception:
+                            ids_obj.append(str(_id_raw))
+                    # attempt ObjectId-based update first
+                    try:
+                        await issues_col.update_many({"_id": {"$in": [i for i in ids_obj if isinstance(i, ObjectId)]}}, {"$set": {"sprint": None, "location": "backlog"}})
+                    except Exception:
+                        pass
+                    # ensure string forms are updated too
+                    try:
+                        await issues_col.update_many({"_id": {"$in": [i for i in ids_obj if not isinstance(i, ObjectId)]}}, {"$set": {"sprint": None, "location": "backlog"}})
+                    except Exception:
+                        pass
+                    # also ensure backlog document contains these items
+                    try:
+                        proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
+                        await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": {"$each": ids_obj}}}, upsert=True)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -490,6 +538,32 @@ class SprintsRouter:
         except Exception:
             pass
 
+        # ensure ALL sprint issues are removed from board after completion (clear sprint + move to backlog)
+        try:
+            ids_obj = []
+            for d in docs:
+                _id_raw = d.get("_id")
+                try:
+                    ids_obj.append(ObjectId(str(_id_raw)))
+                except Exception:
+                    ids_obj.append(str(_id_raw))
+
+            try:
+                await issues_col.update_many({"_id": {"$in": [i for i in ids_obj if isinstance(i, ObjectId)]}}, {"$set": {"sprint": None, "location": "backlog"}})
+            except Exception:
+                pass
+            try:
+                await issues_col.update_many({"_id": {"$in": [i for i in ids_obj if not isinstance(i, ObjectId)]}}, {"$set": {"sprint": None, "location": "backlog"}})
+            except Exception:
+                pass
+            try:
+                proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
+                await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": {"$each": ids_obj}}}, upsert=True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "sprint_id": _id_of(sprint),
@@ -502,22 +576,22 @@ class SprintsRouter:
     async def list_completed_sprints(self, project_id: Optional[str] = Query(None), current_user: User = Depends(get_current_user)):
         """
         GET /sprints/completed
-        - Any authenticated user can call this.
-        - Optional project_id filters results to that project.
+        Return completed sprints (optionally filtered by project_id).
+        For each sprint include only issues that are actually in the final column (treated as completed),
+        and include simple issue details.
         """
         sprints_col = Sprint.get_motor_collection()
+        issues_col = Issue.get_motor_collection()
 
-        # find sprints that have a completed_at timestamp (completed)
+        # load completed sprints
         docs = [d async for d in sprints_col.find({"completed_at": {"$ne": None}})]
 
         import re
 
         def _extract_hex(s: Any) -> Optional[str]:
-            """Return 24-hex substring from s (lowercased) or None."""
             if s is None:
                 return None
             try:
-                # dicts like DBRef / nested docs: try common keys first
                 if isinstance(s, dict):
                     for k in ("$id", "id", "_id"):
                         if k in s and s[k]:
@@ -525,7 +599,6 @@ class SprintsRouter:
                                 return re.search(r"[0-9a-fA-F]{24}", str(s[k])).group(0).lower()
                             except Exception:
                                 pass
-                    # final attempt: stringification of dict
                     s = str(s)
                 else:
                     s = str(s)
@@ -534,12 +607,16 @@ class SprintsRouter:
             m = re.search(r"[0-9a-fA-F]{24}", s)
             return m.group(0).lower() if m else s
 
+        def _norm_status(s: Any) -> str:
+            if not s:
+                return ""
+            return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
         # normalize incoming project_id (may already be hex, or long form)
         project_hex = None
         if project_id:
             project_hex = _extract_hex(project_id)
 
-        # filter by normalized hex string (robust across shapes)
         if project_hex:
             filtered = [d for d in docs if _extract_hex(d.get("project") or d.get("project_id")) == project_hex]
         else:
@@ -547,18 +624,64 @@ class SprintsRouter:
 
         out: List[Dict[str, Any]] = []
         for d in filtered:
-            proj_id = _extract_hex(d.get("project") or d.get("project_id"))
+            proj_hex = _extract_hex(d.get("project") or d.get("project_id"))
             completed_ids = d.get("completed_issue_ids") or []
+
+            # determine board final status for this project (fallback to 'done')
+            final_status = "done"
+            try:
+                if proj_hex:
+                    board = await Board.find_one({"project_id": proj_hex})
+                else:
+                    board = await Board.find_one({"project_id": _extract_hex(d.get("project") or d.get("project_id") or "")})
+                if board and getattr(board, "columns", None):
+                    last_col = max(board.columns, key=lambda c: getattr(c, "position", 0))
+                    final_status = getattr(last_col, "status", None) or getattr(last_col, "name", None) or final_status
+            except Exception:
+                final_status = "done"
+
+            # fetch issue documents for the stored completed_issue_ids
+            issues_list: List[Dict[str, Any]] = []
+            if completed_ids:
+                # build ObjectId/string list
+                q_ids = []
+                for iid in completed_ids:
+                    try:
+                        q_ids.append(ObjectId(str(iid)))
+                    except Exception:
+                        q_ids.append(str(iid))
+                # query issues
+                try:
+                    raw_issues = [r async for r in issues_col.find({"_id": {"$in": q_ids}})]
+                except Exception:
+                    raw_issues = []
+                # include only issues whose status matches final_status (normalized)
+                for ri in raw_issues:
+                    st = ri.get("status")
+                    if _norm_status(st) == _norm_status(final_status):
+                        issues_list.append({
+                            "id": str(ri.get("_id")),
+                            "key": ri.get("key"),
+                            "name": ri.get("name"),
+                            "status": ri.get("status"),
+                            "type": ri.get("type"),
+                            "assignee_id": ri.get("assignee_id") or None,
+                            "created_at": ri.get("created_at"),
+                        })
+
             out.append({
                 "id": str(d.get("_id")),
                 "name": d.get("name"),
-                "project_id": proj_id,
+                "project_id": proj_hex,
                 "start_date": d.get("start_date"),
                 "end_date": d.get("end_date"),
                 "completed_at": d.get("completed_at"),
-                "completed_issue_ids": [str(i) for i in completed_ids],
-                "issue_count": len(completed_ids),
+                # filtered ids and details
+                "completed_issue_ids": [i["id"] for i in issues_list],
+                "completed_issues": issues_list,
+                "issue_count": len(issues_list),
             })
+
         return out
 
 
