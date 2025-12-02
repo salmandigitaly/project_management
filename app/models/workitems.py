@@ -133,6 +133,8 @@ class Sprint(Document):
     start_date: datetime
     end_date: datetime
     created_by: Optional[Link[User]] = None
+    active: bool = False
+    status: Optional[str] = "planned"
     issue_ids: List[PydanticObjectId] = Field(default_factory=list)
     # issues: List[BackLink["Issue"]] = Field(default_factory=list)
 

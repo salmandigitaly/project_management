@@ -116,26 +116,46 @@ class SprintsRouter:
             active_sprints.append(s)
 
         # fetch all issues for project and group by sprint id (safe for Link / id types)
-        all_issues = await Issue.find(Issue.project.id == PydanticObjectId(project_id)).to_list()
-        from collections import defaultdict
-        grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        issues_col = Issue.get_motor_collection()
+        try:
+            # prefer Beanie model list (fast + typed)
+            all_issues = await Issue.find(Issue.project.id == PydanticObjectId(project_id)).to_list()
+        except ValidationError:
+            # fallback: some stored issues have location == null which fails pydantic validation.
+            # Query raw documents and expose them with attribute-style access used below.
+            try:
+                clauses = []
+                try:
+                    pid_obj = ObjectId(str(project_id))
+                    clauses.extend([{"project": pid_obj}, {"project.$id": pid_obj}, {"project.id": pid_obj}])
+                except Exception:
+                    pass
+                clauses.extend([{"project": str(project_id)}, {"project_id": str(project_id)}, {"project.id": str(project_id)}])
+                filter_q = clauses[0] if len(clauses) == 1 else {"$or": clauses}
+                raw_docs = [d async for d in issues_col.find(filter_q)]
+            except Exception:
+                raw_docs = []
+
+            class _RawDoc(dict):
+                def __getattr__(self, name):
+                    return self.get(name)
+
+        all_issues = [_RawDoc(d) for d in raw_docs]
+
+        # Group issues by sprint id
+        grouped = {}
         for issue in all_issues:
-            sid = _id_of(issue.sprint)
-            if not sid:
-                continue
-            grouped[sid].append({
-                "id": _id_of(issue),
-                "key": getattr(issue, "key", None),
-                "type": issue.type,
-                "name": issue.name,
-                "status": issue.status,
-                "assignee_id": _id_of(getattr(issue, "assignee", None)),
-                "story_points": issue.story_points,
-                "estimated_hours": issue.estimated_hours,
-                "time_spent_hours": issue.time_spent_hours,
-                "location": issue.location,
-                "feature_id": _id_of(getattr(issue, "feature", None) or getattr(issue, "feature_id", None)),
-            })
+            issue_sprint_id = _id_of(getattr(issue, "sprint", None))
+            if issue_sprint_id:
+                if issue_sprint_id not in grouped:
+                    grouped[issue_sprint_id] = []
+                grouped[issue_sprint_id].append({
+                    "id": _id_of(issue),
+                    "key": getattr(issue, "key", None),
+                    "type": getattr(issue, "type", None),
+                    "name": getattr(issue, "name", None),
+                    "status": getattr(issue, "status", None),
+                })
 
         out: List[Dict[str, Any]] = []
         for s in active_sprints:
@@ -318,32 +338,25 @@ class SprintsRouter:
         }
 
     async def complete_sprint(
-        self,
-        sprint_id: str,
-        auto_move_incomplete_to: Optional[str] = Query(None, description="Specify 'backlog' or target sprint id; omit or leave empty to only check issues"),
-        current_user: User = Depends(get_current_user),
-    ):
-        """
-        Complete sprint:
-         - When auto_move_incomplete_to is omitted/empty:
-             * If all issues status == 'done' -> mark sprint completed and store snapshot.
-             * If some issues are not done -> return lists of completed_issues and pending_issues (no moves).
-         - When auto_move_incomplete_to is provided:
-             * Move incomplete issues to backlog or provided sprint id, then mark sprint completed and store snapshot.
-        """
-        # treat empty string as omitted
+    self,
+    sprint_id: str,
+    auto_move_incomplete_to: Optional[str] = Query(None, description="Specify 'backlog' or target sprint id; omit or leave empty to only check issues"),
+    current_user: User = Depends(get_current_user),
+
+):
+
         if auto_move_incomplete_to is not None and str(auto_move_incomplete_to).strip() == "":
             auto_move_incomplete_to = None
 
         sprint = await Sprint.get(sprint_id)
         if not sprint:
             raise HTTPException(status_code=404, detail="Sprint not found")
- 
+
         issues_col = Issue.get_motor_collection()
         sprints_col = Sprint.get_motor_collection()
         backlog_col = Backlog.get_motor_collection()
- 
-        # collect all sprint issues (prefer sprint.issue_ids)
+
+        # collect sprint issues
         sprint_issue_ids = getattr(sprint, "issue_ids", []) or []
         docs = []
         if sprint_issue_ids:
@@ -356,27 +369,23 @@ class SprintsRouter:
             if normalized:
                 docs = [d async for d in issues_col.find({"_id": {"$in": normalized}})]
         else:
-            # fallback: find by issue.sprint link (match many common shapes: ObjectId, DBRef, nested $id/id, and string)
             conds = []
             try:
                 obj_id = ObjectId(str(sprint.id))
             except Exception:
                 obj_id = None
             if obj_id:
-                # match when sprint stored as ObjectId, nested $id or id, or DBRef
                 conds.extend([
                     {"sprint": obj_id},
                     {"sprint.$id": obj_id},
                     {"sprint.id": obj_id},
                     {"sprint": DBRef("sprints", obj_id)},
                 ])
-            # always include string forms (some records store link as plain string)
             conds.extend([
                 {"sprint": str(sprint.id)},
                 {"sprint.$id": str(sprint.id)},
                 {"sprint.id": str(sprint.id)},
             ])
-            # deduplicate and build $or
             unique = []
             seen = set()
             for c in conds:
@@ -387,13 +396,16 @@ class SprintsRouter:
             cursor_filter = unique[0] if len(unique) == 1 else {"$or": unique}
             docs = [d async for d in issues_col.find(cursor_filter)]
 
-        # Snapshot all sprint issues (store as strings)
+        # snapshot for history
         snapshot_ids = [str(d.get("_id")) for d in docs]
 
-        # If auto_move_incomplete_to is omitted -> only check statuses
+        # ==========================
+        # CASE 1: AUTO-MOVE DISABLED
+        # ==========================
         if not auto_move_incomplete_to:
             completed_issues = []
             pending_issues = []
+
             for d in docs:
                 iid = str(d.get("_id"))
                 name = d.get("name")
@@ -403,73 +415,64 @@ class SprintsRouter:
                 else:
                     pending_issues.append({"id": iid, "name": name, "status": status})
 
-            # If there are no pending issues -> mark sprint completed and persist snapshot
             if not pending_issues:
                 completed_ts = datetime.utcnow()
-                update_body = {"$set": {"completed_at": completed_ts, "active": False, "completed_issue_ids": snapshot_ids, "status": "completed"}}
+                update_body = {
+                    "$set": {
+                        "completed_at": completed_ts,
+                        "active": False,
+                        "completed_issue_ids": snapshot_ids,
+                        "status": "completed"
+                    }
+                }
                 try:
                     await sprints_col.update_one({"_id": ObjectId(str(sprint.id))}, update_body)
                 except Exception:
-                    try:
-                        await sprints_col.update_one({"_id": str(sprint.id)}, update_body)
-                    except Exception:
-                        pass
-                try:
-                    sprint.completed_at = completed_ts
-                    sprint.active = False
-                    sprint.completed_issue_ids = snapshot_ids
-                    sprint.status = "completed"
-                    await sprint.save()
-                except Exception:
-                    pass
+                    await sprints_col.update_one({"_id": str(sprint.id)}, update_body)
 
-                # Move ALL sprint issues off the board: clear sprint link and set location=backlog
+                sprint.completed_at = completed_ts
+                sprint.active = False
+                sprint.completed_issue_ids = snapshot_ids
+                sprint.status = "completed"
+                await sprint.save()
+
+                # ----------------------------
+                # PATCHED LOGIC (STEP 6 CHANGE)
+                # ----------------------------
+                # DONE issues → DON’T move to backlog
+                # NOT DONE issues → move to backlog
                 try:
-                    # build lists of ObjectId vs string ids from docs
-                    obj_ids = []
-                    str_ids = []
+                    proj_id = _id_of(sprint.project)
                     for d in docs:
                         _id_raw = d.get("_id")
-                        try:
-                            if isinstance(_id_raw, ObjectId):
-                                obj_ids.append(_id_raw)
-                            else:
-                                oid = ObjectId(str(_id_raw))
-                                obj_ids.append(oid)
-                        except Exception:
-                            # not convertible to ObjectId -> keep string form
-                            str_ids.append(str(_id_raw))
+                        status = d.get("status")
 
-                    # update ObjectId-based documents
-                    if obj_ids:
                         try:
-                            await issues_col.update_many(
-                                {"_id": {"$in": obj_ids}},
-                                {"$set": {"location": "backlog"}, "$unset": {"sprint": ""}}
+                            oid = ObjectId(str(_id_raw))
+                        except Exception:
+                            oid = str(_id_raw)
+
+                        
+                        if status != "done":
+                            # incomplete → backlog
+                            await issues_col.update_one(
+                                {"_id": oid},
+                                {"$set": {"sprint": None, "location": "backlog"}}
                             )
-                        except Exception:
-                            pass
-
-                    # update any string-identified docs (if you have string _id variants)
-                    if str_ids:
-                        try:
-                            await issues_col.update_many(
-                                {"_id": {"$in": str_ids}},
-                                {"$set": {"location": "backlog"}, "$unset": {"sprint": ""}}
+                            await backlog_col.update_one(
+                                {"project_id": str(proj_id)},
+                                {"$addToSet": {"items": str(_id_raw)}},
+                                upsert=True
                             )
-                        except Exception:
-                            pass
-
-                    # ensure backlog document contains these items (store string ids for consistency)
-                    try:
-                        proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
-                        all_ids_for_backlog = [str(i) for i in (obj_ids + str_ids)]
-                        if all_ids_for_backlog:
-                            await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": {"$each": all_ids_for_backlog}}}, upsert=True)
-                    except Exception:
-                        pass
+                        else:
+                            # done → REMOVE sprint and mark as archived so it is not shown on board
+                            await issues_col.update_one(
+                                {"_id": oid},
+                                {"$unset": {"sprint": ""}, "$set": {"location": "archived"}}
+                            )
                 except Exception:
                     pass
+                # ----------------------------
 
                 return {
                     "completed_issues": completed_issues,
@@ -478,36 +481,32 @@ class SprintsRouter:
                     "completed_at": completed_ts.isoformat(),
                 }
 
-            # There are pending issues -> return lists, do not move anything or complete sprint
             return {
                 "completed_issues": completed_issues,
                 "pending_issues": pending_issues,
                 "sprint_id": _id_of(sprint),
             }
- 
-        # auto_move_incomplete_to provided -> move incomplete issues (existing behavior)
+
+        # ==========================
+        # CASE 2: AUTO-MOVE ENABLED
+        # ==========================
+
         moved = []
         errors = []
         incomplete_docs = [d for d in docs if d.get("status") != "done"]
+
         for doc in incomplete_docs:
             iid_raw = doc.get("_id")
             try:
-                iid_obj = iid_raw if isinstance(iid_raw, ObjectId) else ObjectId(str(iid_raw))
+                iid_obj = ObjectId(str(iid_raw))
             except Exception:
                 iid_obj = iid_raw
             iid_str = str(iid_raw)
 
-            # remove from current sprint.issue_ids (try both forms)
             try:
                 await sprints_col.update_one({"_id": ObjectId(str(sprint.id))}, {"$pull": {"issue_ids": iid_obj}})
             except Exception:
-                try:
-                    await sprints_col.update_one({"_id": ObjectId(str(sprint.id))}, {"$pull": {"issue_ids": iid_str}})
-                except Exception:
-                    try:
-                        await sprints_col.update_one({"_id": str(sprint.id)}, {"$pull": {"issue_ids": iid_obj}})
-                    except Exception:
-                        await sprints_col.update_one({"_id": str(sprint.id)}, {"$pull": {"issue_ids": iid_str}})
+                await sprints_col.update_one({"_id": str(sprint.id)}, {"$pull": {"issue_ids": iid_str}})
 
             try:
                 if auto_move_incomplete_to != "backlog":
@@ -527,68 +526,64 @@ class SprintsRouter:
 
                     if not moved_ok:
                         await issues_col.update_one({"_id": iid_obj}, {"$set": {"sprint": None, "location": "backlog"}})
-                        try:
-                            proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
-                            await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": iid_obj}}, upsert=True)
-                        except Exception:
-                            await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": iid_str}}, upsert=True)
+                        proj_id = _id_of(sprint.project)
+                        await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": iid_str}}, upsert=True)
                 else:
                     await issues_col.update_one({"_id": iid_obj}, {"$set": {"sprint": None, "location": "backlog"}})
-                    try:
-                        proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
-                        await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": iid_obj}}, upsert=True)
-                    except Exception:
-                        await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": iid_str}}, upsert=True)
+                    proj_id = _id_of(sprint.project)
+                    await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": iid_str}}, upsert=True)
 
                 moved.append(iid_str)
             except Exception as e:
                 errors.append({"issue": iid_str, "error": str(e)})
 
-        # persist sprint completion + snapshot of issue ids and mark status/active
         completed_ts = datetime.utcnow()
         update_body = {"$set": {"completed_at": completed_ts, "active": False, "completed_issue_ids": snapshot_ids, "status": "completed"}}
         try:
             await sprints_col.update_one({"_id": ObjectId(str(sprint.id))}, update_body)
         except Exception:
-            try:
-                await sprints_col.update_one({"_id": str(sprint.id)}, update_body)
-            except Exception:
-                pass
+            await sprints_col.update_one({"_id": str(sprint.id)}, update_body)
 
+        
         try:
             sprint.completed_at = completed_ts
             sprint.active = False
             sprint.completed_issue_ids = snapshot_ids
             sprint.status = "completed"
             await sprint.save()
-        except Exception:
-            pass
+        except (ValueError, AttributeError):
+            await sprint.set({
+                "completed_at": completed_ts,
+                "active": False,
+                "completed_issue_ids": snapshot_ids,
+                "status": "completed",
+            })
 
-        # ensure ALL sprint issues are removed from board after completion (clear sprint + move to backlog)
+
+        # ----------------------------
+        # PATCHED LOGIC FOR AUTO MOVE
+        # ----------------------------
+        # Only incomplete issues should move → backlog
+        # Completed issues remain (only sprint removed)
         try:
-            ids_obj = []
+            proj_id = _id_of(sprint.project)
             for d in docs:
                 _id_raw = d.get("_id")
-                try:
-                    ids_obj.append(ObjectId(str(_id_raw)))
-                except Exception:
-                    ids_obj.append(str(_id_raw))
+                status = d.get("status")
 
-            try:
-                await issues_col.update_many({"_id": {"$in": [i for i in ids_obj if isinstance(i, ObjectId)]}}, {"$set": {"sprint": None, "location": "backlog"}})
-            except Exception:
-                pass
-            try:
-                await issues_col.update_many({"_id": {"$in": [i for i in ids_obj if not isinstance(i, ObjectId)]}}, {"$set": {"sprint": None, "location": "backlog"}})
-            except Exception:
-                pass
-            try:
-                proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
-                await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": {"$each": ids_obj}}}, upsert=True)
-            except Exception:
-                pass
+                try:
+                    oid = ObjectId(str(_id_raw))
+                except Exception:
+                    oid = str(_id_raw)
+
+                if status != "done":
+                    await issues_col.update_one({"_id": oid}, {"$set": {"sprint": None, "location": "backlog"}})
+                else:
+                    # don't set null; mark archived so validation passes and board ignores it
+                    await issues_col.update_one({"_id": oid}, {"$unset": {"sprint": ""}, "$set": {"location": "archived"}})
         except Exception:
             pass
+        # ----------------------------
 
         return {
             "ok": True,
