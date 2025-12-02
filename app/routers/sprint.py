@@ -105,8 +105,15 @@ class SprintsRouter:
         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access to project")
 
-        # get sprints for project
+        # load all sprints for project then filter out completed ones
         sprints = await Sprint.find(Sprint.project.id == PydanticObjectId(project_id)).to_list()
+        active_sprints = []
+        for s in sprints:
+            if getattr(s, "status", None) == "completed":
+                continue
+            if getattr(s, "completed_at", None) is not None:
+                continue
+            active_sprints.append(s)
 
         # fetch all issues for project and group by sprint id (safe for Link / id types)
         all_issues = await Issue.find(Issue.project.id == PydanticObjectId(project_id)).to_list()
@@ -131,7 +138,7 @@ class SprintsRouter:
             })
 
         out: List[Dict[str, Any]] = []
-        for s in sprints:
+        for s in active_sprints:
             doc = self._doc_sprint(s)
             sid = _id_of(s)
             doc["issues"] = grouped.get(sid, [])
@@ -418,28 +425,47 @@ class SprintsRouter:
 
                 # Move ALL sprint issues off the board: clear sprint link and set location=backlog
                 try:
-                    # build list of ObjectId values where possible
-                    ids_obj = []
+                    # build lists of ObjectId vs string ids from docs
+                    obj_ids = []
+                    str_ids = []
                     for d in docs:
                         _id_raw = d.get("_id")
                         try:
-                            ids_obj.append(ObjectId(str(_id_raw)))
+                            if isinstance(_id_raw, ObjectId):
+                                obj_ids.append(_id_raw)
+                            else:
+                                oid = ObjectId(str(_id_raw))
+                                obj_ids.append(oid)
                         except Exception:
-                            ids_obj.append(str(_id_raw))
-                    # attempt ObjectId-based update first
-                    try:
-                        await issues_col.update_many({"_id": {"$in": [i for i in ids_obj if isinstance(i, ObjectId)]}}, {"$set": {"sprint": None, "location": "backlog"}})
-                    except Exception:
-                        pass
-                    # ensure string forms are updated too
-                    try:
-                        await issues_col.update_many({"_id": {"$in": [i for i in ids_obj if not isinstance(i, ObjectId)]}}, {"$set": {"sprint": None, "location": "backlog"}})
-                    except Exception:
-                        pass
-                    # also ensure backlog document contains these items
+                            # not convertible to ObjectId -> keep string form
+                            str_ids.append(str(_id_raw))
+
+                    # update ObjectId-based documents
+                    if obj_ids:
+                        try:
+                            await issues_col.update_many(
+                                {"_id": {"$in": obj_ids}},
+                                {"$set": {"location": "backlog"}, "$unset": {"sprint": ""}}
+                            )
+                        except Exception:
+                            pass
+
+                    # update any string-identified docs (if you have string _id variants)
+                    if str_ids:
+                        try:
+                            await issues_col.update_many(
+                                {"_id": {"$in": str_ids}},
+                                {"$set": {"location": "backlog"}, "$unset": {"sprint": ""}}
+                            )
+                        except Exception:
+                            pass
+
+                    # ensure backlog document contains these items (store string ids for consistency)
                     try:
                         proj_id = _id_of(sprint.project) or str(getattr(sprint, "project", None))
-                        await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": {"$each": ids_obj}}}, upsert=True)
+                        all_ids_for_backlog = [str(i) for i in (obj_ids + str_ids)]
+                        if all_ids_for_backlog:
+                            await backlog_col.update_one({"project_id": str(proj_id)}, {"$addToSet": {"items": {"$each": all_ids_for_backlog}}}, upsert=True)
                     except Exception:
                         pass
                 except Exception:
@@ -777,14 +803,24 @@ async def get_sprint(sprint_id: str, user=Depends(get_current_user)):
     # ensure issue_ids are strings
     data["issue_ids"] = [str(i) for i in getattr(sprint, "issue_ids", [])]
     # project is a Link; expose project id string
-    # use _id_of to consistently produce project id string from Link or doc
     data["project_id"] = _id_of(sprint.project) or str(data.get("project"))
+    # expose completion/status metadata
+    data["completed_at"] = getattr(sprint, "completed_at", None)
+    data["status"] = getattr(sprint, "status", None)
+    data["completed_issue_ids"] = [str(i) for i in getattr(sprint, "completed_issue_ids", [])]
+    data["issue_count"] = len(data["issue_ids"])
     return data
 
 @router.get("/sprints/", response_model=List[SprintOut])
 async def list_sprints(page: int = 1, limit: int = 50, user=Depends(get_current_user)):
     items = []
     async for s in Sprint.find().skip((page-1)*limit).limit(limit):
+        # skip completed sprints
+        if getattr(s, "status", None) == "completed":
+            continue
+        if getattr(s, "completed_at", None) is not None:
+            continue
+
         d = s.dict()
         d["id"] = str(s.id)
         d["issue_ids"] = [str(i) for i in getattr(s, "issue_ids", [])]
@@ -792,5 +828,10 @@ async def list_sprints(page: int = 1, limit: int = 50, user=Depends(get_current_
             d["project_id"] = str(s.project.id)
         except Exception:
             d["project_id"] = str(d.get("project"))
+        # expose completion/status metadata (will be None for active sprints)
+        d["completed_at"] = getattr(s, "completed_at", None)
+        d["status"] = getattr(s, "status", None)
+        d["completed_issue_ids"] = [str(i) for i in getattr(s, "completed_issue_ids", [])]
+        d["issue_count"] = len(d["issue_ids"])
         items.append(d)
     return items
