@@ -83,6 +83,9 @@ class IssuesRouter:
         base_q = Issue.project.id == PydanticObjectId(project_id)
         issues = await Issue.find(base_q).to_list()
 
+        # exclude completed issues from this listing
+        issues = [i for i in issues if getattr(i, "status", None) != "done"]
+
         if sprint_id:
             issues = [i for i in issues if (i.sprint and _id_of(i.sprint) == sprint_id)]
         if epic_id:
