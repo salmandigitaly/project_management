@@ -140,7 +140,7 @@ class SprintsRouter:
                 def __getattr__(self, name):
                     return self.get(name)
 
-        all_issues = [_RawDoc(d) for d in raw_docs]
+            all_issues = [_RawDoc(d) for d in raw_docs]
 
         # Group issues by sprint id
         grouped = {}
