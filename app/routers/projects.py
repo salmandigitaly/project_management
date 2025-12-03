@@ -100,6 +100,9 @@ class ProjectsController(BaseController):
         self.router.add_api_route("/{project_id}", self.get_project, methods=["GET"], response_model=ProjectOut)
         self.router.add_api_route("/{project_id}", self.update_project, methods=["PUT"], response_model=ProjectOut)
         self.router.add_api_route("/{project_id}", self.delete_project, methods=["DELETE"])
+        self.router.add_api_route("/{project_id}/members", self.assign_member, methods=["POST"], response_model=ProjectOut)
+        self.router.add_api_route("/{project_id}/members/{user_id}", self.remove_member, methods=["DELETE"], response_model=ProjectOut)
+# ...existing code...
 
     async def _user_from_id(self, user_id):
         if not user_id:
@@ -450,6 +453,107 @@ class ProjectsController(BaseController):
 
         return {"message": "Project deleted"}
 
+    # ...existing code...
+    async def assign_member(
+        self,
+        project_id: str,
+        payload: Dict[str, str] = Body(...),  # either {"user_id":"...", "role":"..."} OR {"uid1":"role1", "uid2":"role2", ...}
+        current_user: User = Depends(get_current_user),
+    ):
+        """
+        Add or update one or more members for the project.
+        Accepts either:
+          - single member form: {"user_id": "...", "role": "..."}
+          - bulk form: {"6924...": "dev", "6925...": "test", ...}
+        """
+        # permission check (reuse same robust pattern as delete_project)
+        perm_fn = None
+        for name in ("can_manage_project", "can_manage_projects", "can_manage", "can_update_project"):
+            candidate = getattr(PermissionService, name, None)
+            if callable(candidate):
+                perm_fn = candidate
+                break
+        if callable(perm_fn):
+            try:
+                allowed = await perm_fn(project_id, str(current_user.id))
+            except TypeError:
+                try:
+                    allowed = await perm_fn(str(current_user.id), project_id)
+                except Exception:
+                    allowed = False
+            except Exception:
+                allowed = False
+        else:
+            allowed = getattr(current_user, "role", None) == "admin"
+        if not allowed:
+            raise HTTPException(status_code=403, detail="No access to modify project members")
+
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        members = dict(getattr(project, "members", {}) or {})
+
+        # Support legacy single-member body {"user_id": "...", "role": "..."}
+        if "user_id" in payload and "role" in payload and len(payload) == 2:
+            member_doc = await self._user_from_id(payload["user_id"])
+            members[str(member_doc.id)] = payload["role"]
+        else:
+            # Bulk mapping: user_id -> role
+            for uid, role in payload.items():
+                if not uid or not role:
+                    # skip invalid entries; alternatively raise if you prefer strict validation
+                    continue
+                member_doc = await self._user_from_id(uid)
+                members[str(member_doc.id)] = role
+
+        update = {"members": members, "updated_at": datetime.utcnow(), "updated_by": current_user}
+        await project.set(update)
+        project = await Project.get(project_id)
+        return await self.to_response(project)
+# ...existing code...
+    async def remove_member(
+        self,
+        project_id: str,
+        user_id: str,
+        current_user: User = Depends(get_current_user),
+    ):
+        """
+        Remove a member from the project by user_id.
+        """
+        # same permission check as assign_member
+        perm_fn = None
+        for name in ("can_manage_project", "can_manage_projects", "can_manage", "can_update_project"):
+            candidate = getattr(PermissionService, name, None)
+            if callable(candidate):
+                perm_fn = candidate
+                break
+        if callable(perm_fn):
+            try:
+                allowed = await perm_fn(project_id, str(current_user.id))
+            except TypeError:
+                try:
+                    allowed = await perm_fn(str(current_user.id), project_id)
+                except Exception:
+                    allowed = False
+            except Exception:
+                allowed = False
+        else:
+            allowed = getattr(current_user, "role", None) == "admin"
+        if not allowed:
+            raise HTTPException(status_code=403, detail="No access to modify project members")
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        members = dict(getattr(project, "members", {}) or {})
+        members.pop(str(user_id), None)
+
+        update = {"members": members, "updated_at": datetime.utcnow(), "updated_by": current_user}
+        await project.set(update)
+        project = await Project.get(project_id)
+        return await self.to_response(project)
+# ...existing code...
 
 # helper to load a single user summary
 async def _get_user_summary(user_id: Optional[PydanticObjectId | str]) -> Optional[UserSummary]:
@@ -497,28 +601,5 @@ async def _build_members_from_roles(member_roles: Optional[Dict[str, str]]) -> L
         )
     return members
 
-# Example: when building the ProjectOut response (inside your GET endpoints or service)
-# project is your DB model instance
-# project_out = ProjectOut(
-#     id=str(project.id),
-#     key=project.key,
-#     name=project.name,
-#     description=project.description,
-#     avatar_url=project.avatar_url,
-#     platform=project.platform,
-#     start_date=project.start_date,
-#     end_date=project.end_date,
-#     project_lead=await _get_user_summary(project.project_lead),
-#     created_by=await _get_user_summary(project.created_by),
-#     updated_by=await _get_user_summary(project.updated_by),
-#     members=await _build_members_from_roles(getattr(project, "member_roles", {}) or {}),
-#     epics_count=getattr(project, "epics_count", 0),
-#     sprints_count=getattr(project, "sprints_count", 0),
-#     issues_count=getattr(project, "issues_count", 0),
-#     created_at=project.created_at,
-#     updated_at=project.updated_at,
-# )
-# return project_out
 
-# router export
 projects_router = ProjectsController().router
