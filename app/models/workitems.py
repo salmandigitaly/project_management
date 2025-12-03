@@ -26,7 +26,7 @@ IssueType = Literal["story", "task", "bug", "subtask"]
 Priority = Literal["highest", "high", "medium", "low", "lowest"]
 #Status = Literal["todo", "inprogress", "done"]
 Status = Literal["todo", "inprogress", "done", "backlog"]
-Location = Literal["backlog", "sprint", "board"]
+Location = Literal["backlog", "sprint", "board", "archived"]
 LinkReason = Literal["blocks", "is_blocked_by", "relates_to", "duplicates", "is_duplicated_by"]
 
 FIB_POINTS = {0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89}
