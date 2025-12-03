@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from fastapi.security import HTTPBearer
 from typing import List
 from beanie import PydanticObjectId
-from bson import ObjectId
+from bson import DBRef, ObjectId
 from pydantic.error_wrappers import ValidationError
 
 from app.routers.auth import get_current_user
