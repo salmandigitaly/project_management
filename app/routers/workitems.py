@@ -412,7 +412,7 @@ class CommentsRouter:
         if not c:
             raise HTTPException(status_code=404, detail="Comment not found")
 
-        if (str(c.author.id) != str(current_user.id)) and (current_user.role != "admin"):
+        if (_id_of(c.author) != str(current_user.id)) and (current_user.role != "admin"):
             raise HTTPException(status_code=403, detail="No access")
 
         await c.delete()
