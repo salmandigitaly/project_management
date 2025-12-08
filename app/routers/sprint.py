@@ -237,7 +237,37 @@ class SprintsRouter:
             "start_date": getattr(sprint, "start_date", None),
             "end_date": getattr(sprint, "end_date", None),
             "issues": issues_list,
+            "comments": await self._fetch_sprint_comments(sprint.id)
         }
+
+    async def _fetch_sprint_comments(self, sprint_id):
+        comments = await Comment.find(Comment.sprint.id == sprint_id).to_list()
+        out = []
+        for c in comments:
+            author_name = None
+            if c.author:
+                try:
+                    if isinstance(c.author, User):
+                        author_name = c.author.full_name or c.author.email
+                    else:
+                        u = await User.get(c.author.ref.id)
+                        if u:
+                            author_name = u.full_name or u.email
+                except Exception:
+                    pass
+            out.append({
+                "id": _id_of(c),
+                "project_id": _id_of(c.project),
+                "epic_id": _id_of(getattr(c, "epic", None)),
+                "sprint_id": _id_of(getattr(c, "sprint", None)),
+                "issue_id": _id_of(c.issue),
+                "author_id": _id_of(c.author),
+                "author_name": author_name,
+                "comment": c.comment,
+                "created_at": getattr(c, "created_at", None),
+            })
+        return out
+
 
     async def update_sprint(self, sprint_id: str, data: SprintUpdate, current_user: User = Depends(get_current_user)):
         sprint = await Sprint.get(sprint_id)
@@ -256,8 +286,34 @@ class SprintsRouter:
         if not await self._can_manage_sprint(_id_of(sprint.project), current_user):
             raise HTTPException(status_code=403, detail="No access")
 
+        # Move all issues in this sprint to backlog before deleting
+        moved_count = 0
+        try:
+            # Find all issues that belong to this sprint
+            issues = await Issue.find(Issue.sprint.id == sprint.id).to_list()
+            
+            for issue in issues:
+                try:
+                    # Move issue to backlog
+                    issue.sprint = None
+                    issue.location = "backlog"
+                    await issue.save()
+                    moved_count += 1
+                except Exception as e:
+                    # Log error but continue with other issues
+                    print(f"Error moving issue {_id_of(issue)} to backlog: {e}")
+                    
+        except Exception as e:
+            # Log error but continue with sprint deletion
+            print(f"Error finding sprint issues: {e}")
+
+        # Delete the sprint
         await sprint.delete()
-        return {"message": "Sprint deleted"}
+        
+        return {
+            "message": "Sprint deleted",
+            "issues_moved_to_backlog": moved_count
+        }
     
 
     # ...existing code...

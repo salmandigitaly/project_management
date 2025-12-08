@@ -136,60 +136,74 @@ class IssuesRouter:
         return issue_data
 
     async def create_issue(self, data: IssueCreate, current_user: User = Depends(get_current_user)):
-        if not await PermissionService.can_view_project(str(data.project_id), str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access to project")
+        print(f"DEBUG: create_issue called with data={data}")
+        try:
+            if not await PermissionService.can_view_project(str(data.project_id), str(current_user.id)):
+                raise HTTPException(status_code=403, detail="No access to project")
 
-        project = await Project.get(str(data.project_id))
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+            project = await Project.get(str(data.project_id))
+            if not project:
+                raise HTTPException(status_code=404, detail="Project not found")
 
-        # Generate key
-        issue_count = await Issue.find(Issue.project.id == project.id).count()
-        key = f"{project.key}-{issue_count + 1}"
+            # Generate key
+            issue_count = await Issue.find(Issue.project.id == project.id).count()
+            key = f"{project.key}-{issue_count + 1}"
+            print(f"DEBUG: Generated key {key}")
 
-        epic = await Epic.get(str(data.epic_id)) if getattr(data, "epic_id", None) else None
-        sprint = await Sprint.get(str(data.sprint_id)) if getattr(data, "sprint_id", None) else None
-        assignee = await User.get(str(data.assignee_id)) if getattr(data, "assignee_id", None) else None
-        parent = await Issue.get(str(data.parent_id)) if getattr(data, "parent_id", None) else None
-        feature = await Feature.get(str(data.feature_id)) if getattr(data, "feature_id", None) else None
+            epic = await Epic.get(str(data.epic_id)) if getattr(data, "epic_id", None) else None
+            sprint = await Sprint.get(str(data.sprint_id)) if getattr(data, "sprint_id", None) else None
+            assignee = await User.get(str(data.assignee_id)) if getattr(data, "assignee_id", None) else None
+            parent = await Issue.get(str(data.parent_id)) if getattr(data, "parent_id", None) else None
+            feature = await Feature.get(str(data.feature_id)) if getattr(data, "feature_id", None) else None
 
-        issue = Issue(
-             key=key,
-             project=project,
-             epic=epic,
-             sprint=sprint,
-             type=data.type,
-             name=data.name,
-             description=data.description,
-             priority=data.priority,
-             assignee=assignee,
-             parent=parent,
-             story_points=data.story_points,
-             estimated_hours=data.estimated_hours,
-             created_by=current_user,
-             updated_by=current_user,
-             location=data.location,
-            # persist feature id explicitly so it appears in API responses
-            feature_id=PydanticObjectId(feature.id) if feature else None,
-         )
-        await issue.insert()
+            print("DEBUG: Creating Issue object")
+            issue = Issue(
+                 key=key,
+                 project=project,
+                 epic=epic,
+                 sprint=sprint,
+                 type=data.type,
+                 name=data.name,
+                 description=data.description,
+                 priority=data.priority,
+                 assignee=assignee,
+                 parent=parent,
+                 story_points=data.story_points,
+                 estimated_hours=data.estimated_hours,
+                 created_by=current_user,
+                 updated_by=current_user,
+                 location=data.location,
+                # persist feature id explicitly so it appears in API responses
+                feature_id=PydanticObjectId(feature.id) if feature else None,
+             )
+            await issue.insert()
+            print(f"DEBUG: Issue inserted with id {issue.id}")
 
-        # ADD ISSUE TO BACKLOG
-        backlog = await Backlog.find_one({"project_id": str(project.id)})
-        if backlog:
-            # compare as strings to avoid ObjectId / string mismatches
-            if not any(str(i) == str(issue.id) for i in backlog.items):
-                # store as ObjectId-like (PydanticObjectId) to match model type
-                backlog.items.append(PydanticObjectId(issue.id))
-                await backlog.save()
-        return self._doc_issue(issue)
+            # ADD ISSUE TO BACKLOG
+            print("DEBUG: Updating backlog")
+            backlog = await Backlog.find_one({"project_id": str(project.id)})
+            if backlog:
+                # compare as strings to avoid ObjectId / string mismatches
+                if not any(str(i) == str(issue.id) for i in backlog.items):
+                    # store as ObjectId-like (PydanticObjectId) to match model type
+                    backlog.items.append(PydanticObjectId(issue.id))
+                    await backlog.save()
+            
+            print("DEBUG: Returning response")
+            return await self._doc_issue(issue)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"ERROR in create_issue: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to create issue: {str(e)}")
+
     async def get_issue(self, issue_id: str, current_user: User = Depends(get_current_user)):
         issue = await Issue.get(issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
         if not await PermissionService.can_view_project(_id_of(issue.project), str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
-        return self._doc_issue(issue)
+        return await self._doc_issue(issue)
 
     async def update_issue(self, issue_id: str, data: IssueUpdate, current_user: User = Depends(get_current_user)):
         issue = await Issue.get(issue_id)
@@ -222,7 +236,7 @@ class IssuesRouter:
         issue.updated_by = current_user
         issue.updated_at = datetime.utcnow()
         await issue.save()
-        return self._doc_issue(issue)
+        return await self._doc_issue(issue)
 
     async def delete_issue(self, issue_id: str, current_user: User = Depends(get_current_user)):
         issue = await Issue.get(issue_id)
@@ -291,7 +305,7 @@ class IssuesRouter:
 
         issue.location = to
         await issue.save()
-        return self._doc_issue(issue)
+        return await self._doc_issue(issue)
 
     async def add_subtask(self, issue_id: str, data: IssueCreate, current_user: User = Depends(get_current_user)):
         parent = await Issue.get(issue_id)
@@ -320,7 +334,7 @@ class IssuesRouter:
             location=parent.location,
         )
         await sub.insert()
-        return self._doc_issue(sub)
+        return await self._doc_issue(sub)
     
 
     async def move_multiple_issues(
@@ -396,7 +410,7 @@ class IssuesRouter:
 
                 issue.location = to
                 await issue.save()
-                moved_issues.append(self._doc_issue(issue))
+                moved_issues.append(await self._doc_issue(issue))
 
             except Exception as e:
                 errors.append(f"Error moving issue {issue_id}: {str(e)}")
@@ -467,9 +481,34 @@ class IssuesRouter:
         issue.updated_at = datetime.utcnow()
         await issue.save()
 
-        return self._doc_issue(issue)
+        return await self._doc_issue(issue)
 
-    def _doc_issue(self, i: Issue) -> Dict[str, Any]:
+    async def _doc_issue(self, i: Issue) -> Dict[str, Any]:
+        comments = await Comment.find(Comment.issue.id == i.id).to_list()
+        comments_list = []
+        for c in comments:
+            author_name = None
+            if c.author:
+                try:
+                    if isinstance(c.author, User):
+                        author_name = c.author.full_name or c.author.email
+                    else:
+                        u = await User.get(c.author.ref.id)
+                        if u:
+                            author_name = u.full_name or u.email
+                except Exception:
+                    pass
+            comments_list.append({
+                "id": _id_of(c),
+                "project_id": _id_of(c.project),
+                "epic_id": _id_of(getattr(c, "epic", None)),
+                "sprint_id": _id_of(getattr(c, "sprint", None)),
+                "issue_id": _id_of(c.issue),
+                "author_id": _id_of(c.author),
+                "author_name": author_name,
+                "comment": c.comment,
+                "created_at": getattr(c, "created_at", None),
+            })
         return {
             "id": _id_of(i),
             "key": getattr(i, "key", None),
@@ -493,6 +532,7 @@ class IssuesRouter:
             "location": i.location,
             # safe: support either a linked Feature (i.feature) or plain feature_id field
             "feature_id": _id_of(getattr(i, "feature", None) or getattr(i, "feature_id", None)),
+            "comments": comments_list,
         }
 
 issues_router = IssuesRouter().router

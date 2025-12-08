@@ -181,6 +181,38 @@ class EpicsRouter:
             })
         epic_data["issues_count"] = len(issues)
         
+        # Fetch comments for the epic
+        epic_comments = await Comment.find(
+            Comment.epic.id == epic.id,
+            Comment.issue == None
+        ).to_list()
+        
+        epic_data["comments"] = []
+        for c in epic_comments:
+            author_name = None
+            if c.author:
+                try:
+                    if isinstance(c.author, User):
+                        author_name = c.author.full_name or c.author.email
+                    else:
+                        u = await User.get(c.author.ref.id)
+                        if u:
+                            author_name = u.full_name or u.email
+                except Exception:
+                    pass
+
+            epic_data["comments"].append({
+                "id": _id_of(c),
+                "project_id": _id_of(c.project),
+                "epic_id": _id_of(getattr(c, "epic", None)),
+                "sprint_id": _id_of(getattr(c, "sprint", None)),
+                "issue_id": _id_of(c.issue),
+                "author_id": _id_of(c.author),
+                "author_name": author_name,
+                "comment": c.comment,
+                "created_at": getattr(c, "created_at", None),
+            })
+        
         return epic_data
 
     async def update_epic(self, epic_id: str, data: EpicUpdate, current_user: User = Depends(get_current_user)):
@@ -261,41 +293,119 @@ class CommentsRouter:
 
     async def list_comments(
         self,
-        issue_id: str = Query(...),
+        issue_id: Optional[str] = Query(None),
+        epic_id: Optional[str] = Query(None),
+        sprint_id: Optional[str] = Query(None),
+        project_id: Optional[str] = Query(None),
         current_user: User = Depends(get_current_user)
     ):
-        issue = await Issue.get(issue_id)
-        if not issue:
-            raise HTTPException(status_code=404, detail="Issue not found")
-        if not await PermissionService.can_view_project(_id_of(issue.project), str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
+        comments = []
+        
+        if issue_id:
+            issue = await Issue.get(issue_id)
+            if not issue:
+                raise HTTPException(status_code=404, detail="Issue not found")
+            if not await PermissionService.can_view_project(_id_of(issue.project), str(current_user.id)):
+                raise HTTPException(status_code=403, detail="No access")
+            comments = await Comment.find(Comment.issue.id == issue.id).to_list()
 
-        comments = await Comment.find(Comment.issue.id == issue.id).to_list()
+        elif sprint_id:
+            sprint = await Sprint.get(sprint_id)
+            if not sprint:
+                raise HTTPException(status_code=404, detail="Sprint not found")
+            if not await PermissionService.can_view_project(_id_of(sprint.project), str(current_user.id)):
+                raise HTTPException(status_code=403, detail="No access")
+            comments = await Comment.find(Comment.sprint.id == sprint.id).to_list()
+
+        elif epic_id:
+            epic = await Epic.get(epic_id)
+            if not epic:
+                raise HTTPException(status_code=404, detail="Epic not found")
+            if not await PermissionService.can_view_project(_id_of(epic.project), str(current_user.id)):
+                raise HTTPException(status_code=403, detail="No access")
+            # Comments specifically on the Epic (not its issues)
+            comments = await Comment.find(
+                Comment.epic.id == epic.id,
+                Comment.issue == None
+            ).to_list()
+
+        elif project_id:
+            if not await PermissionService.can_view_project(project_id, str(current_user.id)):
+                raise HTTPException(status_code=403, detail="No access")
+            # Comments specifically on the Project
+            comments = await Comment.find(
+                Comment.project.id == PydanticObjectId(project_id),
+                Comment.epic == None,
+                Comment.issue == None,
+                Comment.sprint == None
+            ).to_list()
+        else:
+            # No filter provided
+            return []
+
         out: List[Dict[str, Any]] = []
         for c in comments:
-            out.append(self._doc_comment(c))
+            out.append(await self._doc_comment(c))
         return out
 
     async def create_comment(self, data: CommentCreate, current_user: User = Depends(get_current_user)):
-        issue = await Issue.get(str(data.issue_id))
-        if not issue:
-            raise HTTPException(status_code=404, detail="Issue not found")
+        # Ensure at least one target is provided
+        if not any([data.issue_id, data.sprint_id, data.epic_id, data.project_id]):
+            raise HTTPException(status_code=400, detail="Must provide at least one of issue_id, sprint_id, epic_id, or project_id")
 
-        project = await Project.get(str(data.project_id))
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+        project = None
+        issue = None
+        sprint = None
+        epic = None
 
-        epic = await Epic.get(str(data.epic_id)) if getattr(data, "epic_id", None) else None
+        # Resolve Issue
+        if data.issue_id:
+            issue = await Issue.get(str(data.issue_id))
+            if not issue:
+                raise HTTPException(status_code=404, detail="Issue not found")
+            # Infer project from issue if not set
+            if not data.project_id:
+                data.project_id = _id_of(issue.project)
+
+        # Resolve Sprint
+        if data.sprint_id:
+            sprint = await Sprint.get(str(data.sprint_id))
+            if not sprint:
+                raise HTTPException(status_code=404, detail="Sprint not found")
+            if not data.project_id:
+                data.project_id = _id_of(sprint.project)
+
+        # Resolve Epic
+        if data.epic_id:
+            epic = await Epic.get(str(data.epic_id))
+            if not epic:
+                raise HTTPException(status_code=404, detail="Epic not found")
+            if not data.project_id:
+                data.project_id = _id_of(epic.project)
+
+        # Resolve Project
+        if data.project_id:
+            project = await Project.get(str(data.project_id))
+            if not project:
+                raise HTTPException(status_code=404, detail="Project not found")
+        else:
+            # Should not happen if logic above is correct, but safe fallback
+            raise HTTPException(status_code=400, detail="Could not determine project context")
+
+        # Permission check
+        if not await PermissionService.can_view_project(str(project.id), str(current_user.id)):
+             raise HTTPException(status_code=403, detail="No access")
 
         comment = Comment(
             project=project,
             epic=epic,
+            sprint=sprint,
             issue=issue,
             author=current_user,
             comment=data.comment,
         )
         await comment.insert()
-        return self._doc_comment(comment)
+        return await self._doc_comment(comment)
 
     async def delete_comment(self, comment_id: str, current_user: User = Depends(get_current_user)):
         c = await Comment.get(comment_id)
@@ -308,13 +418,29 @@ class CommentsRouter:
         await c.delete()
         return {"message": "Comment deleted"}
 
-    def _doc_comment(self, c: Comment) -> Dict[str, Any]:
+    async def _doc_comment(self, c: Comment) -> Dict[str, Any]:
+        author_name = None
+        if c.author:
+            try:
+                # If author is already loaded (Document)
+                if isinstance(c.author, User):
+                    author_name = c.author.full_name or c.author.email
+                else:
+                    # It's a Link, fetch it
+                    u = await User.get(c.author.ref.id)
+                    if u:
+                        author_name = u.full_name or u.email
+            except Exception:
+                pass
+
         return {
             "id": _id_of(c),
             "project_id": _id_of(c.project),
             "epic_id": _id_of(getattr(c, "epic", None)),
+            "sprint_id": _id_of(getattr(c, "sprint", None)),
             "issue_id": _id_of(c.issue),
             "author_id": _id_of(c.author),
+            "author_name": author_name,
             "comment": c.comment,
             "created_at": getattr(c, "created_at", None),
         }
@@ -554,6 +680,24 @@ async def get_project(project_id: str, current_user: User = Depends(get_current_
         "description": getattr(proj, "description", None),
         "public": getattr(proj, "public", False),
         # add other fields you need
+        "comments": [
+            {
+                "id": _id_of(c),
+                "project_id": _id_of(c.project),
+                "epic_id": _id_of(getattr(c, "epic", None)),
+                "sprint_id": _id_of(getattr(c, "sprint", None)),
+                "issue_id": _id_of(c.issue),
+                "author_id": _id_of(c.author),
+                "comment": c.comment,
+                "created_at": getattr(c, "created_at", None),
+            }
+            for c in await Comment.find(
+                Comment.project.id == PydanticObjectId(project_id),
+                Comment.epic == None,
+                Comment.issue == None,
+                Comment.sprint == None
+            ).to_list()
+        ]
     }
 
 # add a dedicated router for features (separate Swagger group)

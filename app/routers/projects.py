@@ -217,6 +217,51 @@ class ProjectsController(BaseController):
                 issues_list = []
         data["issues"] = issues_list
 
+        # populate comments (project-level only)
+        comments_list = []
+        if Comment is not _Any:
+            try:
+                # Fetch comments
+                comments = await Comment.find(
+                    Comment.project.id == project.id,
+                    Comment.epic == None,
+                    Comment.issue == None,
+                    Comment.sprint == None
+                ).to_list()
+                
+                for c in comments:
+                    author_name = None
+                    if c.author:
+                        try:
+                            # Try to get from loaded doc or fetch
+                            if getattr(c.author, "full_name", None):
+                                author_name = c.author.full_name
+                            elif getattr(c.author, "email", None):
+                                author_name = c.author.email
+                            else:
+                                # fetch
+                                uid = _link_id(c.author)
+                                if uid:
+                                    u = await User.get(uid)
+                                    if u:
+                                        author_name = u.full_name or u.email
+                        except Exception:
+                            pass
+                    comments_list.append({
+                        "id": str(c.id),
+                        "project_id": _link_id(c.project),
+                        "epic_id": _link_id(getattr(c, "epic", None)),
+                        "sprint_id": _link_id(getattr(c, "sprint", None)),
+                        "issue_id": _link_id(c.issue),
+                        "author_id": _link_id(c.author),
+                        "author_name": author_name,
+                        "comment": c.comment,
+                        "created_at": getattr(c, "created_at", None),
+                    })
+            except Exception:
+                pass
+        data["comments"] = comments_list
+
         # If ProjectOut is the fallback Any (_Any) we cannot instantiate it.
         # Return plain dict in that case; otherwise construct the Pydantic model.
         if ProjectOut is _Any:

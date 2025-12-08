@@ -198,8 +198,8 @@ class Issue(Document):
             raise ValueError("only subtasks can have parent")
 
         # story points only for stories
-        if t != "story" and sp is not None:
-            raise ValueError("story_points allowed only for 'story'")
+        # if t != "story" and sp is not None:
+        #    raise ValueError("story_points allowed only for 'story'")
         return values
 
     @before_event(Delete)
@@ -266,7 +266,8 @@ class Issue(Document):
 class Comment(Document):
     project: Link[Project]
     epic: Optional[Link[Epic]] = None
-    issue: Link[Issue]
+    sprint: Optional[Link[Sprint]] = None
+    issue: Optional[Link[Issue]] = None
     author: Link[User]
     comment: str
     created_at: datetime = Field(default_factory=datetime.utcnow)

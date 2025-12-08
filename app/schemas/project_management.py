@@ -101,6 +101,8 @@ class ProjectOut(BaseModel):
 
     # ✅ members list instead of member_roles
     members: Optional[List[MemberSummary]] = None
+    members: Optional[List[MemberSummary]] = None
+    comments: Optional[List["CommentOut"]] = None
 
     epics_count: int = 0
     sprints_count: int = 0
@@ -150,6 +152,7 @@ class EpicOut(IDModel, TimeStampMixin):
     created_by: PydanticObjectId
     updated_by: Optional[PydanticObjectId] = None
     key: Optional[str] = None
+    comments: Optional[List["CommentOut"]] = None
 
 
 # -------- Sprint --------
@@ -178,6 +181,7 @@ class SprintOut(BaseModel):
     end_date: Optional[datetime] = None
     state: Optional[str] = None
     issue_ids: List[str] = []   # <-- new field exposed to clients
+    comments: Optional[List["CommentOut"]] = None
 
     class Config:
         orm_mode = True
@@ -302,22 +306,26 @@ class IssueOut(BaseModel):
     created_by: PydanticObjectId
     updated_by: Optional[PydanticObjectId] = None
     location: Literal["backlog", "sprint", "board"]
+    comments: Optional[List["CommentOut"]] = None
 
 
 # -------- Comment --------
 class CommentCreate(BaseModel):
-    project_id: PydanticObjectId
-    issue_id: PydanticObjectId
+    project_id: Optional[PydanticObjectId] = None
+    issue_id: Optional[PydanticObjectId] = None
+    sprint_id: Optional[PydanticObjectId] = None
     epic_id: Optional[PydanticObjectId] = None
-    author_id: PydanticObjectId
+
     comment: str
 
 
 class CommentOut(IDModel):
     project_id: PydanticObjectId
-    issue_id: PydanticObjectId
+    issue_id: Optional[PydanticObjectId] = None
+    sprint_id: Optional[PydanticObjectId] = None
     epic_id: Optional[PydanticObjectId] = None
     author_id: PydanticObjectId
+    author_name: Optional[str] = None
     comment: str
     created_at: datetime
 
@@ -410,3 +418,4 @@ class FeatureOut(BaseModel):
 
     class Config:
         orm_mode = True
+ProjectOut.update_forward_refs()
