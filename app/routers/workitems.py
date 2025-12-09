@@ -28,6 +28,7 @@ from app.schemas.project_management import (
 )
 
 from app.services.permission import PermissionService
+from app.core.timezone_utils import format_datetime_ist
 
 security = HTTPBearer()
 
@@ -210,7 +211,7 @@ class EpicsRouter:
                 "author_id": _id_of(c.author),
                 "author_name": author_name,
                 "comment": c.comment,
-                "created_at": getattr(c, "created_at", None),
+                "created_at": format_datetime_ist(getattr(c, "created_at", None)),
             })
         
         return epic_data
@@ -442,7 +443,7 @@ class CommentsRouter:
             "author_id": _id_of(c.author),
             "author_name": author_name,
             "comment": c.comment,
-            "created_at": getattr(c, "created_at", None),
+            "created_at": format_datetime_ist(getattr(c, "created_at", None)),
         }
 
 
@@ -689,7 +690,7 @@ async def get_project(project_id: str, current_user: User = Depends(get_current_
                 "issue_id": _id_of(c.issue),
                 "author_id": _id_of(c.author),
                 "comment": c.comment,
-                "created_at": getattr(c, "created_at", None),
+                "created_at": format_datetime_ist(getattr(c, "created_at", None)),
             }
             for c in await Comment.find(
                 Comment.project.id == PydanticObjectId(project_id),
