@@ -1,5 +1,5 @@
 # app/routers/projects.py
-
+from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from datetime import datetime
 from app.routers.auth import get_current_user
@@ -10,14 +10,15 @@ from typing import List, Optional, Dict, Any as _Any, Any
 from app.services.permission import PermissionService
 # try to import related models for populating lists; fallback to _Any if missing
 try:
-    from app.models.workitems import Epic, Sprint, Issue
+    from app.models.workitems import Epic, Sprint, Issue , Feature
+    from app.models.workitems import Comment, TimeEntry, LinkedWorkItem
 except Exception:
     Epic = Sprint = Issue = _Any
 
 # safe imports for Pydantic models / helpers that may live in other modules.
 # If your project defines these in different modules, replace the try/except targets.
 try:
-    from app.schemas.projects import ProjectOut, ProjectCreate, ProjectUpdate
+    from app.schemas.project_management import ProjectOut, ProjectCreate, ProjectUpdate
 except Exception:
     # fallback: try the other schema module used in this repo
     try:
@@ -31,7 +32,7 @@ except Exception:
     PydanticObjectId = _Any
 
 try:
-    from app.models.boards import Backlog, Board, BoardColumn
+    from app.models.workitems import Backlog, Board, BoardColumn
 except Exception:
     Backlog = Board = BoardColumn = _Any
 
@@ -41,6 +42,10 @@ except Exception:
     UserSummary = MemberSummary = _Any
 
 from bson import ObjectId
+from bson.dbref import DBRef
+import logging
+
+logger = logging.getLogger(__name__)
 
 # helper: normalize a Link / object / id to string id
 def _link_id(link):
@@ -95,14 +100,24 @@ class ProjectsController(BaseController):
         self.router.add_api_route("/{project_id}", self.get_project, methods=["GET"], response_model=ProjectOut)
         self.router.add_api_route("/{project_id}", self.update_project, methods=["PUT"], response_model=ProjectOut)
         self.router.add_api_route("/{project_id}", self.delete_project, methods=["DELETE"])
+        self.router.add_api_route("/{project_id}/members", self.assign_member, methods=["POST"], response_model=ProjectOut)
+        self.router.add_api_route("/{project_id}/members/{user_id}", self.remove_member, methods=["DELETE"], response_model=ProjectOut)
+# ...existing code...
 
     async def _user_from_id(self, user_id):
         if not user_id:
             return None
-        u = await User.get(str(user_id))
-        if not u:
+        try:
+            u = await User.get(str(user_id))
+            if not u:
+                raise HTTPException(status_code=400, detail=f"User not found: {user_id}")
+            return u
+        except Exception as e:
+            # Catch validation errors (invalid ObjectId format) and other errors
+            error_msg = str(e)
+            if "ValidationError" in str(type(e)) or "PydanticObjectId" in error_msg or "Id must be of type" in error_msg:
+                raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
             raise HTTPException(status_code=400, detail=f"User not found: {user_id}")
-        return u
 
     def _to_members_dict(self, member_roles_dict: Optional[Dict[str, str]]) -> Dict[str, str]:
         """
@@ -114,7 +129,7 @@ class ProjectsController(BaseController):
             result.update({str(k): v for k, v in member_roles_dict.items()})
         return result
 
-    async def to_response(self, project: Project) -> ProjectOut:
+    async def to_response(self, project: Project) -> _Any:
         """
         Convert Beanie Document (Links -> ids) and include detailed member & user info.
         """
@@ -209,6 +224,51 @@ class ProjectsController(BaseController):
                 issues_list = []
         data["issues"] = issues_list
 
+        # populate comments (project-level only)
+        comments_list = []
+        if Comment is not _Any:
+            try:
+                # Fetch comments
+                comments = await Comment.find(
+                    Comment.project.id == project.id,
+                    Comment.epic == None,
+                    Comment.issue == None,
+                    Comment.sprint == None
+                ).to_list()
+                
+                for c in comments:
+                    author_name = None
+                    if c.author:
+                        try:
+                            # Try to get from loaded doc or fetch
+                            if getattr(c.author, "full_name", None):
+                                author_name = c.author.full_name
+                            elif getattr(c.author, "email", None):
+                                author_name = c.author.email
+                            else:
+                                # fetch
+                                uid = _link_id(c.author)
+                                if uid:
+                                    u = await User.get(uid)
+                                    if u:
+                                        author_name = u.full_name or u.email
+                        except Exception:
+                            pass
+                    comments_list.append({
+                        "id": str(c.id),
+                        "project_id": _link_id(c.project),
+                        "epic_id": _link_id(getattr(c, "epic", None)),
+                        "sprint_id": _link_id(getattr(c, "sprint", None)),
+                        "issue_id": _link_id(c.issue),
+                        "author_id": _link_id(c.author),
+                        "author_name": author_name,
+                        "comment": c.comment,
+                        "created_at": getattr(c, "created_at", None),
+                    })
+            except Exception:
+                pass
+        data["comments"] = comments_list
+
         # If ProjectOut is the fallback Any (_Any) we cannot instantiate it.
         # Return plain dict in that case; otherwise construct the Pydantic model.
         if ProjectOut is _Any:
@@ -251,7 +311,7 @@ class ProjectsController(BaseController):
                         name="Project Board",
                         project_id=pid,
                         columns=[
-                            BoardColumn(name="Backlog", status="backlog", position=0, color="#8B8B8B"),
+                            # BoardColumn(name="Backlog", status="backlog", position=0, color="#8B8B8B"),
                             BoardColumn(name="To Do", status="todo", position=1, color="#FF6B6B"),
                             BoardColumn(name="In Progress", status="in_progress", position=2, color="#4ECDC4"),
                             BoardColumn(name="In Review", status="in_review", position=3, color="#45B7D1"),
@@ -369,13 +429,183 @@ class ProjectsController(BaseController):
         return await self.to_response(project)
 
     async def delete_project(self, project_id: str, current_user: User = Depends(get_current_user)):
-        await self.ensure_admin(current_user)
         project = await Project.get(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        await project.delete()
-        return {"message": "Project and related data deleted successfully"}
 
+        # permission check (keep yours)
+        # robust permission check: try several possible method names on PermissionService,
+        # fall back to admin role if none found.
+        perm_fn = None
+        for name in ("can_manage_project", "can_manage_projects", "can_delete_project", "can_manage", "can_view_project"):
+            candidate = getattr(PermissionService, name, None)
+            if callable(candidate):
+                perm_fn = candidate
+                break
+
+        if callable(perm_fn):
+            try:
+                # common signature: (project_id, user_id)
+                allowed = await perm_fn(project_id, str(current_user.id))
+            except TypeError:
+                # try swapped args if signature differs
+                try:
+                    allowed = await perm_fn(str(current_user.id), project_id)
+                except Exception:
+                    allowed = False
+            except Exception:
+                allowed = False
+        else:
+            allowed = getattr(current_user, "role", None) == "admin"
+
+        if not allowed:
+            raise HTTPException(status_code=403, detail="No access to delete project")
+
+        # --- cascade delete related documents explicitly (motor delete_many) ---
+        async def _cascade_delete_by_model(model):
+            try:
+                col = model.get_motor_collection()
+            except Exception:
+                return
+            qs = []
+            try:
+                oid = ObjectId(str(project_id))
+                qs += [{"project": oid}, {"project.$id": oid}, {"project.id": oid}, {"project": DBRef("projects", oid)}]
+            except Exception:
+                pass
+            qs += [{"project": str(project_id)}, {"project_id": str(project_id)}, {"project.id": str(project_id)}, {"project.$id": str(project_id)}]
+            # run delete_many for all query shapes
+            for q in qs:
+                try:
+                    await col.delete_many(q)
+                except Exception:
+                    pass
+            # ensure project_id cleanup
+            try:
+                await col.delete_many({"project_id": str(project_id)})
+            except Exception:
+                pass
+
+        # models to clean up (imported at top of file)
+        cleanup = [Epic, Feature, Issue, Sprint, Board, Backlog, Comment, TimeEntry, LinkedWorkItem]
+        for m in cleanup:
+            try:
+                await _cascade_delete_by_model(m)
+            except Exception as e:
+                logger.exception("Cascade error for %s: %s", getattr(m, "__name__", str(m)), str(e))
+
+        # finally remove the project document
+        await project.delete()
+
+        # ensure child documents removed (force cleanup to cover shapes missed by handlers)
+        try:
+            await _delete_project_children(project_id)
+        except Exception as e:
+            logger.exception("Project cleanup failed: %s", str(e))
+
+        return {"message": "Project deleted"}
+
+    # ...existing code...
+    async def assign_member(
+        self,
+        project_id: str,
+        payload: Dict[str, str] = Body(...),  # either {"user_id":"...", "role":"..."} OR {"uid1":"role1", "uid2":"role2", ...}
+        current_user: User = Depends(get_current_user),
+    ):
+        """
+        Add or update one or more members for the project.
+        Accepts either:
+          - single member form: {"user_id": "...", "role": "..."}
+          - bulk form: {"6924...": "dev", "6925...": "test", ...}
+        """
+        # permission check (reuse same robust pattern as delete_project)
+        perm_fn = None
+        for name in ("can_manage_project", "can_manage_projects", "can_manage", "can_update_project"):
+            candidate = getattr(PermissionService, name, None)
+            if callable(candidate):
+                perm_fn = candidate
+                break
+        if callable(perm_fn):
+            try:
+                allowed = await perm_fn(project_id, str(current_user.id))
+            except TypeError:
+                try:
+                    allowed = await perm_fn(str(current_user.id), project_id)
+                except Exception:
+                    allowed = False
+            except Exception:
+                allowed = False
+        else:
+            allowed = getattr(current_user, "role", None) == "admin"
+        if not allowed:
+            raise HTTPException(status_code=403, detail="No access to modify project members")
+
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        members = dict(getattr(project, "members", {}) or {})
+
+        # Support legacy single-member body {"user_id": "...", "role": "..."}
+        if "user_id" in payload and "role" in payload and len(payload) == 2:
+            member_doc = await self._user_from_id(payload["user_id"])
+            members[str(member_doc.id)] = payload["role"]
+        else:
+            # Bulk mapping: user_id -> role
+            for uid, role in payload.items():
+                if not uid or not role:
+                    # skip invalid entries; alternatively raise if you prefer strict validation
+                    continue
+                member_doc = await self._user_from_id(uid)
+                members[str(member_doc.id)] = role
+
+        update = {"members": members, "updated_at": datetime.utcnow(), "updated_by": current_user}
+        await project.set(update)
+        project = await Project.get(project_id)
+        return await self.to_response(project)
+# ...existing code...
+    async def remove_member(
+        self,
+        project_id: str,
+        user_id: str,
+        current_user: User = Depends(get_current_user),
+    ):
+        """
+        Remove a member from the project by user_id.
+        """
+        # same permission check as assign_member
+        perm_fn = None
+        for name in ("can_manage_project", "can_manage_projects", "can_manage", "can_update_project"):
+            candidate = getattr(PermissionService, name, None)
+            if callable(candidate):
+                perm_fn = candidate
+                break
+        if callable(perm_fn):
+            try:
+                allowed = await perm_fn(project_id, str(current_user.id))
+            except TypeError:
+                try:
+                    allowed = await perm_fn(str(current_user.id), project_id)
+                except Exception:
+                    allowed = False
+            except Exception:
+                allowed = False
+        else:
+            allowed = getattr(current_user, "role", None) == "admin"
+        if not allowed:
+            raise HTTPException(status_code=403, detail="No access to modify project members")
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        members = dict(getattr(project, "members", {}) or {})
+        members.pop(str(user_id), None)
+
+        update = {"members": members, "updated_at": datetime.utcnow(), "updated_by": current_user}
+        await project.set(update)
+        project = await Project.get(project_id)
+        return await self.to_response(project)
+# ...existing code...
 
 # helper to load a single user summary
 async def _get_user_summary(user_id: Optional[PydanticObjectId | str]) -> Optional[UserSummary]:
@@ -423,28 +653,5 @@ async def _build_members_from_roles(member_roles: Optional[Dict[str, str]]) -> L
         )
     return members
 
-# Example: when building the ProjectOut response (inside your GET endpoints or service)
-# project is your DB model instance
-# project_out = ProjectOut(
-#     id=str(project.id),
-#     key=project.key,
-#     name=project.name,
-#     description=project.description,
-#     avatar_url=project.avatar_url,
-#     platform=project.platform,
-#     start_date=project.start_date,
-#     end_date=project.end_date,
-#     project_lead=await _get_user_summary(project.project_lead),
-#     created_by=await _get_user_summary(project.created_by),
-#     updated_by=await _get_user_summary(project.updated_by),
-#     members=await _build_members_from_roles(getattr(project, "member_roles", {}) or {}),
-#     epics_count=getattr(project, "epics_count", 0),
-#     sprints_count=getattr(project, "sprints_count", 0),
-#     issues_count=getattr(project, "issues_count", 0),
-#     created_at=project.created_at,
-#     updated_at=project.updated_at,
-# )
-# return project_out
 
-# router export
 projects_router = ProjectsController().router

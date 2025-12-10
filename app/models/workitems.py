@@ -5,13 +5,20 @@ from datetime import datetime
 from pydantic import BaseModel, Field, validator, root_validator
 
 from beanie import (
-    Document, Link, BackLink, PydanticObjectId,
+    DeleteRules, Document, Link, BackLink, PydanticObjectId,
     before_event, after_event,
-    Delete, DeleteRules, Insert, Replace
+    Delete, Insert, Replace
 )
 
 from app.models.users import User  # existing User model
 #from app.models.workitems import Project, Epic  # adjust if circular imports happen
+
+from bson import ObjectId
+from bson.dbref import DBRef
+import logging
+import re
+
+logger = logging.getLogger(__name__)
 
 # ---- Enums / constants ----
 Platform = Literal["ios", "android", "web"]
@@ -19,7 +26,7 @@ IssueType = Literal["story", "task", "bug", "subtask"]
 Priority = Literal["highest", "high", "medium", "low", "lowest"]
 #Status = Literal["todo", "inprogress", "done"]
 Status = Literal["todo", "inprogress", "done", "backlog"]
-Location = Literal["backlog", "sprint", "board"]
+Location = Literal["backlog", "sprint", "board", "archived"]
 LinkReason = Literal["blocks", "is_blocked_by", "relates_to", "duplicates", "is_duplicated_by"]
 
 FIB_POINTS = {0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89}
@@ -48,18 +55,8 @@ class Project(Document):
     issues: List[BackLink["Issue"]] = Field(default_factory=list)
 
 
-    @before_event(Delete)
-    async def _cascade_delete_children(self):
-        pid = getattr(self, "id", None)
-        if pid:
-            await Epic.find(Epic.project.id == pid).delete(link_rule=DeleteRules.DELETE_LINKS)
-            await Sprint.find(Sprint.project.id == pid).delete(link_rule=DeleteRules.DELETE_LINKS)
-            await Issue.find(Issue.project.id == pid).delete(link_rule=DeleteRules.DELETE_LINKS)
-            await Comment.find(Comment.project.id == pid).delete()
-            await LinkedWorkItem.find(
-                (LinkedWorkItem.issue.project.id == pid) | (LinkedWorkItem.linked_issue.project.id == pid)
-            ).delete()
-            await TimeEntry.find(TimeEntry.project.id == pid).delete()
+    # cascade handled by module-level handler below
+    # (removed per-instance cascade to avoid duplicate/conflicting handlers)
 
     class Settings:
         name = "projects"
@@ -85,8 +82,26 @@ class Epic(Document):
 
     @before_event(Delete)
     async def _cascade_delete_issues(self):
-        await Issue.find(Issue.epic.id == self.id).delete(link_rule=DeleteRules.DELETE_LINKS)
-        await Comment.find(Comment.epic.id == self.id).delete()
+        # Delete child issues and comments one-by-one to avoid passing unsupported kwargs to motor
+        try:
+            issues = await Issue.find(Issue.epic.id == self.id).to_list()
+        except Exception:
+            issues = []
+        for it in issues:
+            try:
+                await it.delete()
+            except Exception:
+                pass
+
+        try:
+            comments = await Comment.find(Comment.epic.id == self.id).to_list()
+        except Exception:
+            comments = []
+        for c in comments:
+            try:
+                await c.delete()
+            except Exception:
+                pass
 
     @before_event(Insert)
     async def _generate_key(self):
@@ -118,6 +133,8 @@ class Sprint(Document):
     start_date: datetime
     end_date: datetime
     created_by: Optional[Link[User]] = None
+    active: bool = False
+    status: Optional[str] = "planned"
     issue_ids: List[PydanticObjectId] = Field(default_factory=list)
     # issues: List[BackLink["Issue"]] = Field(default_factory=list)
 
@@ -137,7 +154,9 @@ class Issue(Document):
     name: str
     description: Optional[str] = None
     priority: Priority = "medium"
-    status: Status = "todo"
+    #status: Status = "todo"
+    status: str = Field(default="todo")
+
     assignee: Optional[Link[User]] = None
 
     parent: Optional[Link["Issue"]] = None  # if subtask
@@ -179,18 +198,64 @@ class Issue(Document):
             raise ValueError("only subtasks can have parent")
 
         # story points only for stories
-        if t != "story" and sp is not None:
-            raise ValueError("story_points allowed only for 'story'")
+        # if t != "story" and sp is not None:
+        #    raise ValueError("story_points allowed only for 'story'")
         return values
 
     @before_event(Delete)
     async def _cascade_children(self):
-        await Issue.find(Issue.parent.id == self.id).delete(link_rule=DeleteRules.DELETE_LINKS)
-        await Comment.find(Comment.issue.id == self.id).delete()
-        await LinkedWorkItem.find(
-            (LinkedWorkItem.issue.id == self.id) | (LinkedWorkItem.linked_issue.id == self.id)
-        ).delete()
-        await TimeEntry.find(TimeEntry.issue.id == self.id).delete()
+        # Remove subtasks, comments, linked items and time entries one-by-one
+        try:
+            subtasks = await Issue.find(Issue.parent.id == self.id).to_list()
+        except Exception:
+            subtasks = []
+        for st in subtasks:
+            try:
+                await st.delete()
+            except Exception:
+                pass
+
+        try:
+            comments = await Comment.find(Comment.issue.id == self.id).to_list()
+        except Exception:
+            comments = []
+        for c in comments:
+            try:
+                await c.delete()
+            except Exception:
+                pass
+
+        try:
+            linked = await LinkedWorkItem.find(
+                (LinkedWorkItem.issue.id == self.id) | (LinkedWorkItem.linked_issue.id == self.id)
+            ).to_list()
+        except Exception:
+            linked = []
+        for li in linked:
+            try:
+                await li.delete()
+            except Exception:
+                pass
+
+        try:
+            times = await TimeEntry.find(TimeEntry.issue.id == self.id).to_list()
+        except Exception:
+            times = []
+        for te in times:
+            try:
+                await te.delete()
+            except Exception:
+                pass
+
+    @validator("status", pre=True, always=True)
+    def _normalize_status(cls, v):
+        if v is None:
+            return "todo"
+        s = str(v).strip().lower()
+        # convert common variants to normalized token (e.g. "in progress" -> "in_progress")
+        s = re.sub(r"[^a-z0-9]+", "_", s)
+        s = s.strip("_")
+        return s or "todo"
 
     class Settings:
         name = "issues"
@@ -201,7 +266,8 @@ class Issue(Document):
 class Comment(Document):
     project: Link[Project]
     epic: Optional[Link[Epic]] = None
-    issue: Link[Issue]
+    sprint: Optional[Link[Sprint]] = None
+    issue: Optional[Link[Issue]] = None
     author: Link[User]
     comment: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -297,3 +363,110 @@ class Feature(Document):
 
     class Settings:
         name = "features"
+
+# ---------- robust cascade delete for Project ----------
+@before_event(Delete)
+async def _project_cascade_delete(sender, document, **kwargs):
+    """
+    When a Project is deleted, find child documents in Epics/Features/Issues/Sprints/Boards/Backlogs/Comments/TimeEntries/LinkedWorkItems
+    using multiple query shapes (ObjectId, DBRef, string) and delete them one-by-one via .delete() so Beanie per-document hooks run.
+    """
+    try:
+        # Only run when a Project document is being deleted
+        try:
+            is_project = (sender.__name__ == "Project") or (getattr(document, "__class__", None).__name__ == "Project")
+        except Exception:
+            is_project = False
+        if not is_project:
+            return
+
+        pid = getattr(document, "id", None) or getattr(document, "_id", None)
+        if not pid:
+            return
+        pid_str = str(pid)
+
+        # build candidate query shapes
+        q_candidates = []
+        try:
+            oid = ObjectId(pid_str)
+            q_candidates += [
+                {"project": oid},
+                {"project.$id": oid},
+                {"project.id": oid},
+                {"project": DBRef("projects", oid)},
+            ]
+        except Exception:
+            oid = None
+
+        # string / nested string shapes
+        q_candidates += [
+            {"project": pid_str},
+            {"project_id": pid_str},
+            {"project.id": pid_str},
+            {"project.$id": pid_str},
+        ]
+
+        # models to consider for deletion (order: dependent -> children)
+        models = [
+            globals().get("LinkedWorkItem"),
+            globals().get("Comment"),
+            globals().get("TimeEntry"),
+            globals().get("Issue"),
+            globals().get("Feature"),
+            globals().get("Epic"),
+            globals().get("Sprint"),
+            globals().get("Board"),
+            globals().get("Backlog"),
+        ]
+
+        for m in models:
+            if not m:
+                continue
+            try:
+                # collect matching documents using $or across candidate queries
+                docs = []
+                try:
+                    if len(q_candidates) > 1:
+                        docs = await m.find({"$or": q_candidates}).to_list()
+                    else:
+                        docs = await m.find(q_candidates[0]).to_list()
+                except Exception:
+                    # fallback: try each query individually
+                    tmp = []
+                    for q in q_candidates:
+                        try:
+                            tmp.extend(await m.find(q).to_list())
+                        except Exception:
+                            pass
+                    docs = tmp
+
+                # also ensure projects saved under project_id are included
+                try:
+                    more = await m.find({"project_id": pid_str}).to_list()
+                    if more:
+                        docs.extend(more)
+                except Exception:
+                    pass
+
+                # deduplicate and delete one-by-one to trigger Beanie delete hooks
+                seen = set()
+                for d in docs:
+                    doc_id = getattr(d, "id", None) or getattr(d, "_id", None)
+                    if not doc_id:
+                        continue
+                    doc_id_s = str(doc_id)
+                    if doc_id_s in seen:
+                        continue
+                    seen.add(doc_id_s)
+                    try:
+                        await d.delete()
+                    except Exception:
+                        # ignore per-document delete errors and continue
+                        pass
+            except Exception:
+                # ignore model-level failures and continue with others
+                pass
+
+    except Exception:
+        # swallow to avoid failing the parent Project delete operation
+        pass

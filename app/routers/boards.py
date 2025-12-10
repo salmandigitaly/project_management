@@ -4,13 +4,14 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional , Literal
 import re
 from bson import ObjectId
+from bson.dbref import DBRef
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer
 from beanie import PydanticObjectId
 from app.routers.auth import get_current_user
 from app.models.users import User
-from app.models.workitems import Project, Sprint, Issue, Board, BoardColumn
+from app.models.workitems import Project, Sprint, Issue, Board, BoardColumn , Epic
 from app.schemas.project_management import ColumnCreate, ColumnUpdate
 from app.services.permission import PermissionService
 
@@ -18,6 +19,11 @@ security = HTTPBearer()
 
 ColumnStatus = Literal["todo", "inprogress", "done"]
 
+# add: normalize function for status comparisons used below
+def _normalize_status(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 def _issue_to_minimal_dict(issue: Issue) -> Dict[str, Any]:
     # Helper function to safely get ID from Link or Document
@@ -364,7 +370,7 @@ class BoardsRouter:
                 "name": "Project Board",
                 "project": ObjectId(str(project.id)) if isinstance(getattr(project, "id", None), ObjectId) else str(project.id),
                 "columns": [
-                    {"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
+                    #{"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
                     {"name": "To Do", "status": "todo", "position": 1, "color": "#FF6B6B"},
                     {"name": "In Progress", "status": "in_progress", "position": 2, "color": "#4ECDC4"},
                     {"name": "In Review", "status": "in_review", "position": 3, "color": "#45B7D1"},
@@ -389,16 +395,32 @@ class BoardsRouter:
         or_list.append({"project": str(project_id)})
         or_list.append({"project_id": str(project_id)})
 
+        # Only include issues that are on the board (location == "board")
         raw_issues = []
         try:
-            raw_issues = [d async for d in issues_col.find({"$or": or_list}).sort([("created_at", 1)])]
+            query = {"$and": [{"$or": or_list}, {"location": "board"}]}
+            raw_issues = [d async for d in issues_col.find(query).sort([("created_at", 1)])]
         except Exception:
             raw_issues = []
 
         # collect unique assignee ids and epic ids to resolve names in bulk
         def extract_id(v: Any) -> Optional[str]:
+            """Normalize various DB shapes (ObjectId, DBRef, dict, Link) into plain string id."""
             if v is None:
                 return None
+            # direct ObjectId
+            if isinstance(v, ObjectId):
+                return str(v)
+            # bson DBRef
+            if isinstance(v, DBRef):
+                return str(v.id)
+            # beanie / pydantic object with .id attr
+            if hasattr(v, "id"):
+                try:
+                    return str(getattr(v, "id"))
+                except Exception:
+                    pass
+            # dict-like shapes from motor driver
             if isinstance(v, dict):
                 for k in ("$id", "_id", "id"):
                     if k in v and v[k]:
@@ -417,20 +439,43 @@ class BoardsRouter:
                 epic_ids.add(e)
 
         # helper to build mixed _id list (ObjectId where possible)
+     # ...existing code...
         def norm_id_list(ids: List[str]) -> List[Any]:
-            out = []
-            for s in ids:
-                if not s:
+            out: List[Any] = []
+            for item in ids:
+                if not item:
                     continue
-                if re.search(r"[0-9a-fA-F]{24}$", s):
+                # already an ObjectId
+                if isinstance(item, ObjectId):
+                    out.append(item)
+                    continue
+                # DBRef -> ObjectId
+                if isinstance(item, DBRef):
+                    try:
+                        out.append(ObjectId(str(item.id)))
+                        continue
+                    except Exception:
+                        out.append(str(item))
+                        continue
+                s = str(item)
+                # exact 24-hex -> ObjectId
+                if re.fullmatch(r"[0-9a-fA-F]{24}", s):
                     try:
                         out.append(ObjectId(s))
                         continue
                     except Exception:
                         pass
-                out.append(str(s))
+                # find 24-hex substring
+                m = re.search(r"([0-9a-fA-F]{24})", s)
+                if m:
+                    try:
+                        out.append(ObjectId(m.group(1)))
+                        continue
+                    except Exception:
+                        pass
+                out.append(s)
             return out
-
+# ...existing code...
         users_map: Dict[str, Dict[str, str]] = {}
         if assignee_ids:
             vals = norm_id_list(list(assignee_ids))
@@ -444,7 +489,7 @@ class BoardsRouter:
                 pass
 
         epics_map: Dict[str, str] = {}
-        if epic_ids and epics_col:
+        if epic_ids and epics_col is not None:
             vals = norm_id_list(list(epic_ids))
             try:
                 cursor = epics_col.find({"_id": {"$in": vals}})
@@ -469,7 +514,8 @@ class BoardsRouter:
             col_issues: List[Dict[str, Any]] = []
             for r in raw_issues:
                 issue_status = r.get("status") or ""
-                if str(issue_status).lower() != str(col_status).lower():
+                # compare normalized forms to handle "in_progress" vs "inprogress" etc.
+                if _normalize_status(issue_status) != _normalize_status(col_status):
                     continue
                 iid = extract_id(r.get("_id"))
                 ass_id = extract_id(r.get("assignee"))
@@ -483,7 +529,8 @@ class BoardsRouter:
                     "id": str(iid),
                     "name": r.get("name") or r.get("title") or r.get("summary"),
                     "type": r.get("type"),
-                    "epic_name": epics_map.get(str(epic_id)) if epic_id else None,
+                    # provide epic id (not epic name)
+                    "epic_id": str(epic_id) if epic_id else None,
                     "created_at": created_iso,
                     "status": issue_status,
                     "description": r.get("description"),
@@ -563,7 +610,11 @@ class BoardsRouter:
         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
 
-        issues = await Issue.find(Issue.sprint.id == PydanticObjectId(sprint_id)).to_list()
+        # only show sprint issues that were moved to the board (location == "board")
+        issues = await Issue.find(
+            Issue.sprint.id == PydanticObjectId(sprint_id),
+            Issue.location == "board"
+        ).to_list()
 
         sprint_meta = {
             "id": str(sprint.id),
@@ -616,8 +667,13 @@ class BoardsRouter:
         for issue in issues:
             status = issue.status
 
+            # match using normalized status form
             target_col = next(
-                (cid for cid, c in columns.items() if c["column_info"]["status"] == status),
+                (
+                    cid
+                    for cid, c in columns.items()
+                    if _normalize_status(c["column_info"]["status"]) == _normalize_status(status)
+                ),
                 None
             )
 
@@ -648,7 +704,10 @@ class BoardsRouter:
             "sprint": sprint_meta
         }
 
+<<<<<<< HEAD
 # ...existing code...
+=======
+>>>>>>> dev
     async def _resolve_board_and_project(self, board_id: str) -> tuple[Board, Optional[str]]:
         """
         Resolve Board by id and return (board, project_id_str)
@@ -661,6 +720,7 @@ class BoardsRouter:
             board = await Board.get(board_id)
         except Exception:
             pass
+<<<<<<< HEAD
 
         # fallback: try PydanticObjectId then motor collection (board_id as board._id)
         if not board:
@@ -749,8 +809,58 @@ class BoardsRouter:
 
         return board, project_id
 # ...existing code...
+=======
+>>>>>>> dev
 
+        # fallback: try PydanticObjectId then motor collection (board_id as board._id)
+        if not board:
+            try:
+                board = await Board.get(PydanticObjectId(board_id))
+            except Exception:
+                pass
+
+        if not board:
+            # last resort: motor collection lookup by ObjectId for board._id
+            try:
+                col = Board.get_motor_collection()
+                doc = await col.find_one({"_id": ObjectId(board_id)})
+                if doc:
+                    try:
+                        board = await Board.get(str(doc.get("_id")))
+                    except Exception:
+                        board = Board.parse_obj(doc) if hasattr(Board, "parse_obj") else None
+            except Exception:
+                board = None
+
+        # If still not found, maybe the caller passed a project id — try to find board by project
+        if not board:
+            try:
+                # try project stored as ObjectId or string in board documents
+                q_variants = []
+                try:
+                    q_variants.append({"project": ObjectId(str(board_id))})
+                except Exception:
+                    pass
+                q_variants.append({"project": str(board_id)})
+                q_variants.append({"project_id": str(board_id)})
+                query = {"$or": q_variants} if len(q_variants) > 1 else q_variants[0]
+
+                col = Board.get_motor_collection()
+                doc = await col.find_one(query)
+                if doc:
+                    try:
+                        board = await Board.get(str(doc.get("_id")))
+                    except Exception:
+                        board = Board.parse_obj(doc) if hasattr(Board, "parse_obj") else None
+            except Exception:
+                board = None
+
+        return board, (str(board.project_id) if board and board.project_id else None)
+
+# expose router instance for other modules to import
 boards_router = BoardsRouter().router
+# keep legacy name if other code expects `router`
+router = boards_router
 
 
 
