@@ -704,10 +704,6 @@ class BoardsRouter:
             "sprint": sprint_meta
         }
 
-<<<<<<< HEAD
-# ...existing code...
-=======
->>>>>>> dev
     async def _resolve_board_and_project(self, board_id: str) -> tuple[Board, Optional[str]]:
         """
         Resolve Board by id and return (board, project_id_str)
@@ -720,97 +716,6 @@ class BoardsRouter:
             board = await Board.get(board_id)
         except Exception:
             pass
-<<<<<<< HEAD
-
-        # fallback: try PydanticObjectId then motor collection (board_id as board._id)
-        if not board:
-            try:
-                board = await Board.get(PydanticObjectId(board_id))
-            except Exception:
-                pass
-
-        if not board:
-            # last resort: motor collection lookup by ObjectId for board._id
-            try:
-                col = Board.get_motor_collection()
-                doc = await col.find_one({"_id": ObjectId(board_id)})
-                if doc:
-                    try:
-                        board = await Board.get(str(doc.get("_id")))
-                    except Exception:
-                        board = Board.parse_obj(doc) if hasattr(Board, "parse_obj") else None
-            except Exception:
-                board = None
-
-        # If still not found, maybe the caller passed a project id — try to find board by project
-        if not board:
-            try:
-                # try project stored as ObjectId or string in board documents
-                q_variants = []
-                try:
-                    q_variants.append({"project": ObjectId(str(board_id))})
-                except Exception:
-                    pass
-                q_variants.append({"project": str(board_id)})
-                q_variants.append({"project_id": str(board_id)})
-                query = {"$or": q_variants} if len(q_variants) > 1 else q_variants[0]
-                col = Board.get_motor_collection()
-                doc = await col.find_one(query)
-                if doc:
-                    try:
-                        board = await Board.get(str(doc.get("_id")))
-                    except Exception:
-                        board = Board.parse_obj(doc) if hasattr(Board, "parse_obj") else None
-            except Exception:
-                board = None
-
-        # If still not found but a Project exists with that id, create default board (auto-create)
-        if not board:
-            try:
-                project = await Project.get(board_id)
-                if project:
-                    col = Board.get_motor_collection()
-                    default_board = {
-                        "name": "Project Board",
-                        "project": ObjectId(str(project.id)) if isinstance(getattr(project, "id", None), ObjectId) else str(project.id),
-                        "columns": [
-                            {"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
-                            {"name": "To Do", "status": "todo", "position": 1, "color": "#FF6B6B"},
-                            {"name": "In Progress", "status": "in_progress", "position": 2, "color": "#4ECDC4"},
-                            {"name": "In Review", "status": "in_review", "position": 3, "color": "#45B7D1"},
-                            {"name": "Done", "status": "done", "position": 4, "color": "#96CEB4"},
-                        ],
-                        "visible_to_roles": [],
-                        "created_at": datetime.utcnow(),
-                    }
-                    res = await col.insert_one(default_board)
-                    board = await Board.get(str(res.inserted_id))
-            except Exception:
-                board = None
-
-        if not board:
-            return None, None
-
-        # extract project id from board (support Link, ObjectId, or string)
-        project_id = None
-        try:
-            proj = getattr(board, "project", None)
-            if proj is None:
-                proj = getattr(board, "project_id", None)
-            # Link/document reference
-            if hasattr(proj, "id"):
-                project_id = str(proj.id)
-            elif isinstance(proj, (ObjectId,)):
-                project_id = str(proj)
-            elif isinstance(proj, str):
-                project_id = proj
-        except Exception:
-            project_id = None
-
-        return board, project_id
-# ...existing code...
-=======
->>>>>>> dev
 
         # fallback: try PydanticObjectId then motor collection (board_id as board._id)
         if not board:
@@ -861,6 +766,3 @@ class BoardsRouter:
 boards_router = BoardsRouter().router
 # keep legacy name if other code expects `router`
 router = boards_router
-
-
-
