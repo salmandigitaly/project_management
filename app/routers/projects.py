@@ -107,10 +107,17 @@ class ProjectsController(BaseController):
     async def _user_from_id(self, user_id):
         if not user_id:
             return None
-        u = await User.get(str(user_id))
-        if not u:
+        try:
+            u = await User.get(str(user_id))
+            if not u:
+                raise HTTPException(status_code=400, detail=f"User not found: {user_id}")
+            return u
+        except Exception as e:
+            # Catch validation errors (invalid ObjectId format) and other errors
+            error_msg = str(e)
+            if "ValidationError" in str(type(e)) or "PydanticObjectId" in error_msg or "Id must be of type" in error_msg:
+                raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
             raise HTTPException(status_code=400, detail=f"User not found: {user_id}")
-        return u
 
     def _to_members_dict(self, member_roles_dict: Optional[Dict[str, str]]) -> Dict[str, str]:
         """
