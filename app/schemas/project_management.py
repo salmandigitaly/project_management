@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, List, Dict, Literal
+from typing import Optional, List, Dict, Literal, Any
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
 from beanie import PydanticObjectId
@@ -110,21 +110,7 @@ class ProjectOut(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-# class ProjectOut(BaseModel):
-#     # ✅ expose plain strings in responses to avoid {} serialization
-#     id: str
-#     key: str
-#     name: str
-#     description: Optional[str] = None
-#     avatar_url: Optional[str] = None
-#     platform: Optional[Platform] = None
-#     start_date: Optional[datetime] = None
-#     end_date: Optional[datetime] = None
 
-    # ✅ only string ids in response
-    # project_lead: Optional[str] = None
-    # created_by: Optional[str] = None
-    # updated_by: Optional[str] = None
 class EpicCreate(BaseModel):
     name: str
     project_id: PydanticObjectId
@@ -373,6 +359,58 @@ class TimeEntryOut(IDModel):
     clock_in: datetime
     clock_out: Optional[datetime] = None
     seconds: int = 0
+
+
+class TimeEntryUpdate(BaseModel):
+    clock_in: Optional[datetime] = None
+    clock_out: Optional[datetime] = None
+    seconds: Optional[int] = None
+
+
+class EmployeeTimeReport(BaseModel):
+    user_id: str
+    user_name: str
+    user_email: str
+    total_hours: float
+    total_entries: int
+    issues_worked: List[Dict[str, Any]]
+
+
+class IssueTimeReport(BaseModel):
+    issue_id: str
+    issue_key: Optional[str] = None
+    issue_name: str
+    estimated_hours: Optional[float] = None
+    actual_hours: float
+    variance_hours: float
+    variance_percentage: Optional[float] = None
+    assignee_id: Optional[str] = None
+    assignee_name: Optional[str] = None
+    time_entries_count: int
+    status: str
+
+
+class ProjectTimeSummary(BaseModel):
+    project_id: str
+    project_name: str
+    total_estimated_hours: float
+    total_actual_hours: float
+    total_variance_hours: float
+    issues_count: int
+    employees_count: int
+    active_sessions_count: int
+
+
+class ActiveTimeEntry(BaseModel):
+    entry_id: str
+    user_id: str
+    user_name: str
+    issue_id: str
+    issue_key: Optional[str] = None
+    issue_name: str
+    clock_in: datetime
+    elapsed_seconds: int
+    elapsed_hours: float
 
 # -------- Board Columns --------
 class ColumnCreate(BaseModel):

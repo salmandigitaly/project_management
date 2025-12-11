@@ -12,8 +12,10 @@ from app.routers.auth import auth_router, get_current_user
 from app.routers.users import users_router
 from app.routers.workitems import (
     epics_router, comments_router,
-    links_router, time_router, features_router
+    links_router, features_router
 )
+# Import new dedicated time tracking router
+from app.routers.time_tracking import router as time_tracking_router
 # prefer explicit sprint router from dedicated module (avoid overriding it below)
 from app.routers.sprint import sprints_router
 from app.routers.issues import issues_router
@@ -75,11 +77,10 @@ app.include_router(auth_router, prefix=api_prefix)
 app.include_router(users_router, prefix=api_prefix)
 app.include_router(epics_router, prefix=api_prefix)
 app.include_router(issues_router, prefix=api_prefix)
-# ensure the sprint router that defines fixed paths (like /sprints/completed) is the one imported above
 app.include_router(sprints_router, prefix=api_prefix)
 app.include_router(comments_router, prefix=api_prefix)
 app.include_router(links_router, prefix=api_prefix)
-app.include_router(time_router, prefix=api_prefix)
+app.include_router(time_tracking_router, prefix=api_prefix)
 
 # include features router so Swagger shows a separate "features" section
 app.include_router(features_router, prefix=api_prefix)
