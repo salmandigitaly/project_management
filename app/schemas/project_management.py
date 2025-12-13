@@ -105,8 +105,10 @@ class ProjectOut(BaseModel):
     comments: Optional[List["CommentOut"]] = None
 
     epics_count: int = 0
+    features_count: int = 0
     sprints_count: int = 0
     issues_count: int = 0
+    subtasks_count: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

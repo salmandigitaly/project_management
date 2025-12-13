@@ -246,7 +246,7 @@ class BulkImportService:
                 assignee=assignee,
                 estimated_hours=data.get("estimated_hours"),
                 created_by=self.current_user,
-                parent_id=parent_issue.id,
+                parent=parent_issue,
                 location="backlog"
             )
             

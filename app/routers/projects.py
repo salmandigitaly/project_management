@@ -196,25 +196,50 @@ class ProjectsController(BaseController):
         # populate related lists (epics/sprints/issues) with lightweight summaries
         # safe: only run if model import succeeded
         epics_list = []
+        epics_count = 0
         if Epic is not _Any:
             async for e in Epic.find():
                 if _link_id(getattr(e, "project", None)) == str(project.id):
                     epics_list.append({"id": str(getattr(e, "id", None)), "title": getattr(e, "title", getattr(e, "name", None))})
+                    epics_count += 1
         data["epics"] = epics_list
+        data["epics_count"] = epics_count
+
+        features_list = []
+        features_count = 0
+        if Feature is not _Any:
+            try:
+                async for f in Feature.find(Feature.project_id == str(project.id)):
+                    features_list.append({"id": str(f.id), "name": getattr(f, "name", None)})
+                    features_count += 1
+            except Exception:
+                pass
+        data["features"] = features_list
+        data["features_count"] = features_count
 
         sprints_list = []
+        sprints_count = 0
         if Sprint is not _Any:
             async for s in Sprint.find():
                 if _link_id(getattr(s, "project", None)) == str(project.id):
                     sprints_list.append({"id": str(getattr(s, "id", None)), "name": getattr(s, "name", None)})
+                    sprints_count += 1
         data["sprints"] = sprints_list
+        data["sprints_count"] = sprints_count
 
         issues_list = []
+        issues_count = 0
+        subtasks_count = 0
         if Issue is not _Any:
             try:
                 # use raw motor collection to avoid Beanie model validation errors
                 col = Issue.get_motor_collection()
                 async for doc in col.find({"project": ObjectId(str(project.id))}):
+                    issue_type = doc.get("type", "")
+                    if issue_type == "subtask":
+                        subtasks_count += 1
+                    else:
+                        issues_count += 1
                     issues_list.append({
                         "id": str(doc.get("_id")),
                         "title": doc.get("title") or doc.get("summary") or ""
@@ -223,6 +248,8 @@ class ProjectsController(BaseController):
                 # fallback: leave issues_list empty on any error
                 issues_list = []
         data["issues"] = issues_list
+        data["issues_count"] = issues_count
+        data["subtasks_count"] = subtasks_count
 
         # populate comments (project-level only)
         comments_list = []
