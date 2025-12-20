@@ -1,5 +1,5 @@
 from typing import Dict, List
-from app.models.workitems import Project, Epic, Sprint, Issue, Feature
+from app.models.workitems import Project, Epic, Sprint, Issue, Feature, Board, BoardColumn, Backlog
 from app.models.users import User
 from beanie import PydanticObjectId
 
@@ -58,31 +58,60 @@ class BulkImportService:
         """Create a single project"""
         try:
             # Check if project already exists
-            existing = await Project.find_one(Project.key == data["key"])
-            if existing:
-                self.created_projects[data["key"]] = existing
-                return
+            project = await Project.find_one(Project.key == data["key"])
             
-            # Get project lead
-            project_lead = self.current_user
-            if data.get("project_lead_email"):
-                lead = await User.find_one(User.email == data["project_lead_email"])
-                if lead:
-                    project_lead = lead
+            if not project:
+                # Create new project
+                # Get project lead
+                project_lead = self.current_user
+                if data.get("project_lead_email"):
+                    lead = await User.find_one(User.email == data["project_lead_email"])
+                    if lead:
+                        project_lead = lead
+                
+                project = Project(
+                    key=data["key"],
+                    name=data["name"],
+                    description=data.get("description"),
+                    platform=data.get("platform", "").lower() if data.get("platform") else None,
+                    start_date=data.get("start_date"),
+                    end_date=data.get("end_date"),
+                    project_lead=project_lead,
+                    created_by=self.current_user,
+                    members={}
+                )
+                await project.insert()
             
-            project = Project(
-                key=data["key"],
-                name=data["name"],
-                description=data.get("description"),
-                platform=data.get("platform"),
-                start_date=data.get("start_date"),
-                end_date=data.get("end_date"),
-                project_lead=project_lead,
-                created_by=self.current_user,
-                members={}
-            )
+            # Create default Board and Backlog for the project (Check even if project exists)
+            pid = str(project.id)
             
-            await project.insert()
+            # Create backlog
+            try:
+                existing_backlog = await Backlog.find_one({"project_id": pid})
+                if not existing_backlog:
+                    await Backlog(project_id=pid, items=[]).insert()
+            except Exception as e:
+                self.errors.append(f"Error creating backlog for project {data['key']}: {str(e)}")
+            
+            # Create board with default columns
+            try:
+                existing_board = await Board.find_one({"project_id": pid})
+                if not existing_board:
+                    board = Board(
+                        name="Project Board",
+                        project_id=pid,
+                        columns=[
+                            BoardColumn(name="To Do", status="todo", position=1, color="#FF6B6B"),
+                            BoardColumn(name="In Progress", status="in_progress", position=2, color="#4ECDC4"),
+                            BoardColumn(name="In Review", status="in_review", position=3, color="#45B7D1"),
+                            BoardColumn(name="Done", status="done", position=4, color="#96CEB4"),
+                        ],
+                        visible_to_roles=[],
+                    )
+                    await board.insert()
+            except Exception as e:
+                self.errors.append(f"Error creating board for project {data['key']}: {str(e)}")
+            
             self.created_projects[data["key"]] = project
             
         except Exception as e:
