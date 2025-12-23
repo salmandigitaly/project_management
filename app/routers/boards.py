@@ -17,7 +17,7 @@ from app.services.permission import PermissionService
 
 security = HTTPBearer()
 
-ColumnStatus = Literal["todo", "inprogress", "done"]
+ColumnStatus = Literal["todo", "inprogress", "done", "impediment"]
 
 # add: normalize function for status comparisons used below
 def _normalize_status(s: Optional[str]) -> str:
@@ -315,6 +315,9 @@ class BoardsRouter:
 
         if len(new_order) != len(board.columns):
             raise HTTPException(status_code=400, detail="New order must include all columns")
+            
+        if len(set(new_order)) != len(new_order):
+             raise HTTPException(status_code=400, detail="New order must contain unique positions")
 
         # Create mapping of old position to column
         column_map = {col.position: col for col in board.columns}
@@ -373,7 +376,7 @@ class BoardsRouter:
                     #{"name": "Backlog", "status": "backlog", "position": 0, "color": "#8B8B8B"},
                     {"name": "To Do", "status": "todo", "position": 1, "color": "#FF6B6B"},
                     {"name": "In Progress", "status": "in_progress", "position": 2, "color": "#4ECDC4"},
-                    {"name": "In Review", "status": "in_review", "position": 3, "color": "#45B7D1"},
+                    {"name": "Impediment", "status": "impediment", "position": 3, "color": "#FF6B6B"},
                     {"name": "Done", "status": "done", "position": 4, "color": "#96CEB4"},
                 ],
                 "visible_to_roles": [],

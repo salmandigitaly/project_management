@@ -25,7 +25,7 @@ Platform = Literal["ios", "android", "web"]
 IssueType = Literal["story", "task", "bug", "subtask"]
 Priority = Literal["highest", "high", "medium", "low", "lowest"]
 #Status = Literal["todo", "inprogress", "done"]
-Status = Literal["todo", "inprogress", "done", "backlog"]
+Status = Literal["todo", "inprogress", "done", "backlog", "impediment"]
 Location = Literal["backlog", "sprint", "board", "archived"]
 LinkReason = Literal["blocks", "is_blocked_by", "relates_to", "duplicates", "is_duplicated_by"]
 
@@ -50,9 +50,9 @@ class Project(Document):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     # These are VIRTUAL backlinks - they work when you fetch with populate
-    epics: List[BackLink["Epic"]] = Field(default_factory=list)
-    sprints: List[BackLink["Sprint"]] = Field(default_factory=list)
-    issues: List[BackLink["Issue"]] = Field(default_factory=list)
+    # epics: List[BackLink["Epic"]] = Field(default_factory=list)
+    # sprints: List[BackLink["Sprint"]] = Field(default_factory=list)
+    # issues: List[BackLink["Issue"]] = Field(default_factory=list)
 
 
     # cascade handled by module-level handler below
@@ -78,7 +78,7 @@ class Epic(Document):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     # REMOVE THIS - BackLinks cause encoding errors
-    issues: List[BackLink["Issue"]] = Field(default_factory=list)
+    # issues: List[BackLink["Issue"]] = Field(default_factory=list)
 
     @before_event(Delete)
     async def _cascade_delete_issues(self):
@@ -171,8 +171,8 @@ class Issue(Document):
     location: Location = "backlog"
 
     # backlinks
-    subtasks: List[BackLink["Issue"]] = Field(default_factory=list)
-    comments: List[BackLink["Comment"]] = Field(default_factory=list)
+    # subtasks: List[BackLink["Issue"]] = Field(default_factory=list)
+    # comments: List[BackLink["Comment"]] = Field(default_factory=list)
 
     # add this persisted field so API responses include the feature id
     feature_id: Optional[PydanticObjectId] = None
@@ -185,7 +185,7 @@ class Issue(Document):
             raise ValueError(f"story_points must be one of {sorted(FIB_POINTS)}")
         return v
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def _check_subtask_rules(cls, values):
         t = values.get("type")
         parent = values.get("parent")

@@ -341,7 +341,7 @@ class ProjectsController(BaseController):
                             # BoardColumn(name="Backlog", status="backlog", position=0, color="#8B8B8B"),
                             BoardColumn(name="To Do", status="todo", position=1, color="#FF6B6B"),
                             BoardColumn(name="In Progress", status="in_progress", position=2, color="#4ECDC4"),
-                            BoardColumn(name="In Review", status="in_review", position=3, color="#45B7D1"),
+                            BoardColumn(name="Impediment", status="impediment", position=3, color="#FF6B6B"),
                             BoardColumn(name="Done", status="done", position=4, color="#96CEB4"),
                         ],
                         visible_to_roles=[],
