@@ -105,8 +105,8 @@ class SprintsRouter:
         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access to project")
 
-        # load all sprints for project then filter out completed ones
-        sprints = await Sprint.find(Sprint.project.id == PydanticObjectId(project_id)).to_list()
+        # load all sprints for project then filter out completed/deleted ones
+        sprints = await Sprint.find(Sprint.project.id == PydanticObjectId(project_id), Sprint.is_deleted != True).to_list()
         active_sprints = []
         for s in sprints:
             if getattr(s, "status", None) == "completed":
@@ -200,7 +200,7 @@ class SprintsRouter:
 
     async def get_sprint(self, sprint_id: str, current_user: User = Depends(get_current_user)):
         sprint = await Sprint.get(sprint_id)
-        if not sprint:
+        if not sprint or sprint.is_deleted:
             raise HTTPException(status_code=404, detail="Sprint not found")
         # use _id_of to support Links / fetched docs
         if not await PermissionService.can_view_project(_id_of(sprint.project), str(current_user.id)):
@@ -307,8 +307,10 @@ class SprintsRouter:
             # Log error but continue with sprint deletion
             print(f"Error finding sprint issues: {e}")
 
-        # Delete the sprint
-        await sprint.delete()
+        # Soft-delete the sprint
+        sprint.is_deleted = True
+        sprint.deleted_at = datetime.utcnow()
+        await sprint.save()
         
         return {
             "message": "Sprint deleted",

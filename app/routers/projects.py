@@ -364,7 +364,7 @@ class ProjectsController(BaseController):
         Non-admin: return only projects the user can view (owner/member/public).
         """
         out = []
-        async for p in Project.find().skip(skip).limit(limit):
+        async for p in Project.find(Project.is_deleted != True).skip(skip).limit(limit):
             # admin sees everything
             if getattr(current_user, "role", None) == "admin":
                 allowed = True
@@ -377,7 +377,7 @@ class ProjectsController(BaseController):
 
     async def get_project(self, project_id: str, current_user: User = Depends(get_current_user)):
         proj = await Project.get(project_id)
-        if not proj:
+        if not proj or proj.is_deleted:
             raise HTTPException(status_code=404, detail="Project not found")
 
         # allow admin OR owner/member OR public projects
@@ -488,8 +488,8 @@ class ProjectsController(BaseController):
         if not allowed:
             raise HTTPException(status_code=403, detail="No access to delete project")
 
-        # --- cascade delete related documents explicitly (motor delete_many) ---
-        async def _cascade_delete_by_model(model):
+        # --- soft-delete project and related documents ---
+        async def _soft_delete_by_model(model):
             try:
                 col = model.get_motor_collection()
             except Exception:
@@ -501,36 +501,34 @@ class ProjectsController(BaseController):
             except Exception:
                 pass
             qs += [{"project": str(project_id)}, {"project_id": str(project_id)}, {"project.id": str(project_id)}, {"project.$id": str(project_id)}]
-            # run delete_many for all query shapes
+            
+            # run UpdateMany for all query shapes to mark as deleted
+            update_q = {"$set": {"is_deleted": True, "deleted_at": datetime.utcnow()}}
             for q in qs:
                 try:
-                    await col.delete_many(q)
+                    await col.update_many(q, update_q)
                 except Exception:
                     pass
             # ensure project_id cleanup
             try:
-                await col.delete_many({"project_id": str(project_id)})
+                await col.update_many({"project_id": str(project_id)}, update_q)
             except Exception:
                 pass
 
-        # models to clean up (imported at top of file)
-        cleanup = [Epic, Feature, Issue, Sprint, Board, Backlog, Comment, TimeEntry, LinkedWorkItem]
+        # models to soft-delete
+        cleanup = [Epic, Feature, Issue, Sprint, Comment]
         for m in cleanup:
             try:
-                await _cascade_delete_by_model(m)
+                await _soft_delete_by_model(m)
             except Exception as e:
-                logger.exception("Cascade error for %s: %s", getattr(m, "__name__", str(m)), str(e))
+                logger.exception("Soft-delete error for %s: %s", getattr(m, "__name__", str(m)), str(e))
 
-        # finally remove the project document
-        await project.delete()
+        # finally mark the project as deleted
+        project.is_deleted = True
+        project.deleted_at = datetime.utcnow()
+        await project.save()
 
-        # ensure child documents removed (force cleanup to cover shapes missed by handlers)
-        try:
-            await _delete_project_children(project_id)
-        except Exception as e:
-            logger.exception("Project cleanup failed: %s", str(e))
-
-        return {"message": "Project deleted"}
+        return {"message": "Project moved to Recycle Bin"}
 
     # ...existing code...
     async def assign_member(

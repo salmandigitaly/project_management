@@ -48,6 +48,8 @@ class Project(Document):
     updated_by: Optional[Link[User]] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: bool = Field(default=False)
+    deleted_at: Optional[datetime] = None
 
     # These are VIRTUAL backlinks - they work when you fetch with populate
     # epics: List[BackLink["Epic"]] = Field(default_factory=list)
@@ -76,6 +78,8 @@ class Epic(Document):
     updated_by: Optional[Link[User]] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: bool = Field(default=False)
+    deleted_at: Optional[datetime] = None
 
     # REMOVE THIS - BackLinks cause encoding errors
     # issues: List[BackLink["Issue"]] = Field(default_factory=list)
@@ -136,6 +140,8 @@ class Sprint(Document):
     active: bool = False
     status: Optional[str] = "planned"
     issue_ids: List[PydanticObjectId] = Field(default_factory=list)
+    is_deleted: bool = Field(default=False)
+    deleted_at: Optional[datetime] = None
     # issues: List[BackLink["Issue"]] = Field(default_factory=list)
 
     class Settings:
@@ -169,6 +175,8 @@ class Issue(Document):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     location: Location = "backlog"
+    is_deleted: bool = Field(default=False)
+    deleted_at: Optional[datetime] = None
 
     # backlinks
     # subtasks: List[BackLink["Issue"]] = Field(default_factory=list)
@@ -360,6 +368,8 @@ class Feature(Document):
     updated_by: Optional[PydanticObjectId] = None
     created_at: datetime = datetime.utcnow()
     updated_at: Optional[datetime] = None
+    is_deleted: bool = Field(default=False)
+    deleted_at: Optional[datetime] = None
 
     class Settings:
         name = "features"

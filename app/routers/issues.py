@@ -80,8 +80,7 @@ class IssuesRouter:
         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access to project")
 
-        base_q = Issue.project.id == PydanticObjectId(project_id)
-        issues = await Issue.find(base_q).to_list()
+        issues = await Issue.find(Issue.project.id == PydanticObjectId(project_id), Issue.is_deleted != True).to_list()
 
         # exclude completed issues from this listing
         issues = [i for i in issues if getattr(i, "status", None) != "done"]
@@ -199,7 +198,7 @@ class IssuesRouter:
 
     async def get_issue(self, issue_id: str, current_user: User = Depends(get_current_user)):
         issue = await Issue.get(issue_id)
-        if not issue:
+        if not issue or issue.is_deleted:
             raise HTTPException(status_code=404, detail="Issue not found")
         if not await PermissionService.can_view_project(_id_of(issue.project), str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access")
@@ -244,8 +243,17 @@ class IssuesRouter:
             raise HTTPException(status_code=404, detail="Issue not found")
         # permission check removed: allow authenticated users to delete issues
 
-        await issue.delete()
-        return {"message": "Issue deleted"}
+        issue.is_deleted = True
+        issue.deleted_at = datetime.utcnow()
+        await issue.save()
+
+        # optional: soft delete children (subtasks)
+        try:
+            await Issue.find(Issue.parent.id == issue.id).update({"$set": {"is_deleted": True, "deleted_at": datetime.utcnow()}})
+        except Exception:
+            pass
+
+        return {"message": "Issue moved to Recycle Bin"}
 
     async def move_issue(
         self,

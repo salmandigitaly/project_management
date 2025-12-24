@@ -22,6 +22,7 @@ from app.routers.issues import issues_router
 from app.routers.projects import *
 from app.routers.bulk_import import router as bulk_import_router
 from app.routers.reports import router as reports_router
+from app.routers.recycle_bin import router as recycle_bin_router
 # add these imports
 from app.services.permission import PermissionService
 try:
@@ -93,6 +94,7 @@ app.include_router(projects_router,prefix=api_prefix)
 app.include_router(boards_router,prefix=api_prefix)
 app.include_router(reports_router, prefix=api_prefix)
 app.include_router(bulk_import_router, prefix=api_prefix)
+app.include_router(recycle_bin_router, prefix=api_prefix)
 if employees_router:
     app.include_router(employees_router, prefix=api_prefix)
 else:
@@ -106,7 +108,7 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    return {"message": "HRMS API", "version": settings.VERSION}
+    return {"message": "HRMS API is up and running. Ready to serve requests ⚙️", "version": settings.VERSION}
 
 @app.get("/health")
 async def health_check():

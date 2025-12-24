@@ -111,6 +111,8 @@ class ProjectOut(BaseModel):
     subtasks_count: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
 
 
 class EpicCreate(BaseModel):
@@ -140,6 +142,8 @@ class EpicOut(IDModel, TimeStampMixin):
     created_by: PydanticObjectId
     updated_by: Optional[PydanticObjectId] = None
     key: Optional[str] = None
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
     comments: Optional[List["CommentOut"]] = None
 
 
@@ -169,6 +173,8 @@ class SprintOut(BaseModel):
     end_date: Optional[datetime] = None
     state: Optional[str] = None
     issue_ids: List[str] = []   # <-- new field exposed to clients
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
     comments: Optional[List["CommentOut"]] = None
 
     class Config:
@@ -294,6 +300,8 @@ class IssueOut(BaseModel):
     created_by: PydanticObjectId
     updated_by: Optional[PydanticObjectId] = None
     location: Literal["backlog", "sprint", "board"]
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
     comments: Optional[List["CommentOut"]] = None
 
 
@@ -455,7 +463,22 @@ class FeatureOut(BaseModel):
     status: Optional[str] = None
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
 
     class Config:
         orm_mode = True
+
+class RecycleBinItem(BaseModel):
+    id: str
+    type: str # "project", "epic", "sprint", "issue", "feature"
+    name: str
+    key: Optional[str] = None
+    deleted_at: datetime
+    details: Optional[Dict[str, Any]] = None
+
+class RecycleBinResponse(BaseModel):
+    items: List[RecycleBinItem]
+    total: int
+
 ProjectOut.update_forward_refs()

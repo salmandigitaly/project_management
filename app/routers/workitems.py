@@ -123,7 +123,7 @@ class EpicsRouter:
         if not await PermissionService.can_view_project(project_id, str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access to project")
 
-        epics = await Epic.find(Epic.project.id == PydanticObjectId(project_id)).to_list()
+        epics = await Epic.find(Epic.project.id == PydanticObjectId(project_id), Epic.is_deleted != True).to_list()
         return [self._doc_epic(e) for e in epics]
 
     async def create_epic(self, data: EpicCreate, current_user: User = Depends(get_current_user)):
@@ -157,8 +157,8 @@ class EpicsRouter:
         if not project_id or not await PermissionService.can_view_project(str(project_id), str(current_user.id)):
              raise HTTPException(status_code=403, detail="No access to project")
 
-        # Get all issues for this epic
-        issues = await Issue.find(Issue.epic.id == epic.id).to_list()
+        # Get all non-deleted issues for this epic
+        issues = await Issue.find(Issue.epic.id == epic.id, Issue.is_deleted != True).to_list()
         
         # Convert epic to dict
         epic_data = self._doc_epic(epic)
@@ -245,8 +245,17 @@ class EpicsRouter:
         if not project_id or not await PermissionService.can_edit_project(str(project_id), str(current_user.id)):
             raise HTTPException(status_code=403, detail="No access to project")
 
-        await epic.delete()
-        return {"message": "Epic deleted"}
+        epic.is_deleted = True
+        epic.deleted_at = datetime.utcnow()
+        await epic.save()
+
+        # optional: soft delete issues under this epic
+        try:
+            await Issue.find(Issue.epic.id == epic.id).update({"$set": {"is_deleted": True, "deleted_at": datetime.utcnow()}})
+        except Exception:
+            pass
+
+        return {"message": "Epic moved to Recycle Bin"}
 
     def _doc_epic(self, e: Epic) -> Dict[str, Any]:
         # Safely get project ID whether it's fetched or a Link
@@ -644,7 +653,7 @@ async def list_projects(skip: int = 0, limit: int = 100, current_user: User = De
     Non-admin -> return only projects current_user can view (owner/member/public).
     """
     items: List[Dict[str, Any]] = []
-    async for p in Project.find().skip(skip).limit(limit):
+    async for p in Project.find(Project.is_deleted != True).skip(skip).limit(limit):
         # admin sees everything
         if getattr(current_user, "role", None) == "admin":
             allowed = True
@@ -739,7 +748,7 @@ async def create_feature(payload: FeatureCreate, current_user: User = Depends(ge
 @features_router.get("/", response_model=List[FeatureOut])
 async def list_features(project_id: str = Query(...), current_user: User = Depends(get_current_user)):
     items = []
-    async for f in Feature.find(Feature.project_id == PydanticObjectId(project_id)):
+    async for f in Feature.find(Feature.project_id == PydanticObjectId(project_id), Feature.is_deleted != True):
         items.append(FeatureOut(
             id=str(f.id),
             project_id=str(f.project_id),
@@ -798,8 +807,13 @@ async def delete_feature(feature_id: str, current_user: User = Depends(get_curre
     f = await Feature.get(feature_id)
     if not f:
         raise HTTPException(status_code=404, detail="Feature not found")
+    
     if not await PermissionService.can_edit_project(str(f.project_id), str(current_user.id)):
         raise HTTPException(status_code=403, detail="No access")
-    await f.delete()
-    return {"message": "Feature deleted"}
+    
+    f.is_deleted = True
+    f.deleted_at = datetime.utcnow()
+    await f.save()
+
+    return {"message": "Feature moved to Recycle Bin"}
 
