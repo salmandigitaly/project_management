@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Optional, List, Dict, Literal, Any
 from datetime import datetime
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, root_validator
 from beanie import PydanticObjectId
 from typing import Optional, List
 from datetime import datetime
@@ -328,21 +328,29 @@ class CommentOut(IDModel):
 
 # -------- Linked Work Items --------
 class LinkCreate(BaseModel):
-    issue_id: PydanticObjectId
-    linked_issue_id: PydanticObjectId
-    reason: LinkReason = "relates_to"
+    source_id: PydanticObjectId
+    source_type: str  # e.g. "project", "epic", "sprint", "issue", "feature"
+    target_id: PydanticObjectId
+    target_type: str
+    reason: str = "relates_to"
 
-    @validator("linked_issue_id")
-    def no_self_link(cls, v, values):
-        if v == values.get("issue_id"):
-            raise ValueError("issue_id and linked_issue_id cannot be same")
-        return v
+    @root_validator(skip_on_failure=True)
+    def no_self_link(cls, values):
+        sid = values.get("source_id")
+        tid = values.get("target_id")
+        st = values.get("source_type")
+        tt = values.get("target_type")
+        if sid == tid and st == tt:
+            raise ValueError("source_id and target_id cannot be same for the same type")
+        return values
 
-
-class LinkOut(IDModel):
-    issue_id: PydanticObjectId
-    linked_issue_id: PydanticObjectId
-    reason: LinkReason
+class LinkOut(BaseModel):
+    id: str
+    source_id: str
+    source_type: str
+    target_id: str
+    target_type: str
+    reason: str
     created_at: datetime
 
 

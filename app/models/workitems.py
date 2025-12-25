@@ -292,7 +292,7 @@ class LinkedWorkItem(Document):
     source_type: WorkItemType
     target_id: PydanticObjectId
     target_type: WorkItemType
-    reason: str = "relates_to"  # Can be LinkReason or any string
+    reason: str = "relates_to"  # Can be LinkReason or any custom string
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Settings:

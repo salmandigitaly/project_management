@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
 import re
+
 from bson import ObjectId
 from bson.dbref import DBRef
 from pydantic.error_wrappers import ValidationError
@@ -464,39 +465,63 @@ class LinksRouter:
 
     def setup_routes(self):
         deps = [Depends(security), Depends(get_current_user)]
-        self.router.add_api_route("/", self.list_links, methods=["GET"], dependencies=deps)
+        self.router.add_api_route("/", self.list_links, methods=["GET"])
+        self.router.add_api_route("/{link_id}", self.get_link, methods=["GET"])
         self.router.add_api_route("/", self.create_link, methods=["POST"], dependencies=deps)
         self.router.add_api_route("/{link_id}", self.delete_link, methods=["DELETE"], dependencies=deps)
 
-    async def list_links(self, issue_id: str = Query(...), current_user: User = Depends(get_current_user)):
-        issue = await Issue.get(issue_id)
-        if not issue:
-            raise HTTPException(status_code=404, detail="Issue not found")
-        if not await PermissionService.can_view_project(_id_of(issue.project), str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
-
+    async def list_links(
+        self, 
+        item_id: str = Query(..., description="The ID of the item (Project/Epic/Issue etc) to list links for"),
+        current_user: User = Depends(get_current_user)
+    ):
+        from beanie.operators import Or
+        # Find links where this item is either source or target
+        gid = PydanticObjectId(item_id)
         links = await LinkedWorkItem.find(
-            (LinkedWorkItem.issue.id == issue.id) | (LinkedWorkItem.linked_issue.id == issue.id)
+            Or(LinkedWorkItem.source_id == gid, LinkedWorkItem.target_id == gid)
         ).to_list()
 
-        out: List[Dict[str, Any]] = []
+        out_links = []
         for l in links:
-            out.append(self._doc_link(l))
-        return out
+            out_links.append(self._doc_link(l))
+        return out_links
 
+    async def get_link(self, link_id: str, current_user: User = Depends(get_current_user)):
+        l = await LinkedWorkItem.get(link_id)
+        if not l:
+            raise HTTPException(status_code=404, detail="Link not found")
+        return self._doc_link(l)
     async def create_link(self, data: LinkCreate, current_user: User = Depends(get_current_user)):
-        main = await Issue.get(str(data.issue_id))
-        other = await Issue.get(str(data.linked_issue_id))
-        if not main or not other:
-            raise HTTPException(status_code=404, detail="Issue(s) not found")
+        # Validate that both source and target exist
+        model_map = {
+            "project": Project,
+            "epic": Epic,
+            "sprint": Sprint,
+            "issue": Issue,
+            "feature": Feature
+        }
+        
+        source_model = model_map.get(data.source_type)
+        target_model = model_map.get(data.target_type)
+        
+        if not source_model or not target_model:
+            raise HTTPException(status_code=400, detail=f"Invalid source or target type: {data.source_type} / {data.target_type}")
+            
+        source = await source_model.get(str(data.source_id))
+        target = await target_model.get(str(data.target_id))
+        
+        if not source or not target:
+            raise HTTPException(status_code=404, detail="Source or target item not found")
 
-        if not await PermissionService.can_edit_workitem(_id_of(main), str(current_user.id)):
-            raise HTTPException(status_code=403, detail="No access")
-
-        if _id_of(main) == _id_of(other):
-            raise HTTPException(status_code=400, detail="Cannot link issue to itself")
-
-        link = LinkedWorkItem(issue=main, linked_issue=other, reason=data.reason)
+        # Create the generic link
+        link = LinkedWorkItem(
+            source_id=data.source_id,
+            source_type=data.source_type,
+            target_id=data.target_id,
+            target_type=data.target_type,
+            reason=data.reason
+        )
         await link.insert()
         return self._doc_link(link)
 
@@ -512,11 +537,13 @@ class LinksRouter:
 
     def _doc_link(self, l: LinkedWorkItem) -> Dict[str, Any]:
         return {
-            "id": _id_of(l),
-            "issue_id": _id_of(l.issue),
-            "linked_issue_id": _id_of(l.linked_issue),
+            "id": str(l.id),
+            "source_id": str(l.source_id),
+            "source_type": l.source_type,
+            "target_id": str(l.target_id),
+            "target_type": l.target_type,
             "reason": l.reason,
-            "created_at": getattr(l, "created_at", None),
+            "created_at": l.created_at,
         }
 
 
