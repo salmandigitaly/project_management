@@ -364,7 +364,7 @@ class ProjectsController(BaseController):
         Non-admin: return only projects the user can view (owner/member/public).
         """
         out = []
-        async for p in Project.find(Project.is_deleted != True).skip(skip).limit(limit):
+        async for p in Project.find().skip(skip).limit(limit):
             # admin sees everything
             if getattr(current_user, "role", None) == "admin":
                 allowed = True

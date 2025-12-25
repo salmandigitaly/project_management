@@ -27,7 +27,8 @@ Priority = Literal["highest", "high", "medium", "low", "lowest"]
 #Status = Literal["todo", "inprogress", "done"]
 Status = Literal["todo", "inprogress", "done", "backlog", "impediment"]
 Location = Literal["backlog", "sprint", "board", "archived"]
-LinkReason = Literal["blocks", "is_blocked_by", "relates_to", "duplicates", "is_duplicated_by"]
+WorkItemType = Literal["project", "epic", "sprint", "issue", "feature"]
+LinkReason = Literal["blocks", "is_blocked_by", "relates_to", "duplicates", "is_duplicated_by", "parent", "child"]
 
 FIB_POINTS = {0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89}
 
@@ -285,11 +286,13 @@ class Comment(Document):
         use_state_management = True
 
 
-# ================= Links (issue ↔ issue) =================
+# ================= Generic Links (any work item ↔ any work item) =================
 class LinkedWorkItem(Document):
-    issue: Link[Issue]          # main
-    linked_issue: Link[Issue]   # other
-    reason: LinkReason = "relates_to"
+    source_id: PydanticObjectId
+    source_type: WorkItemType
+    target_id: PydanticObjectId
+    target_type: WorkItemType
+    reason: str = "relates_to"  # Can be LinkReason or any string
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Settings:
