@@ -157,12 +157,29 @@ async def create_global_sprint(data: SprintCreate, current_user: User = Depends(
         status="planned"
     )
     await sprint.insert()
+
+    # Proactively create the global board with 4 columns
+    board = Board(
+        name=f"Global Board - {sprint.name}",
+        project_id=None,
+        sprint_id=_id_of(sprint),
+        columns=[
+            BoardColumn(name="To Do", status="todo", position=1, color="#FF6B6B"),
+            BoardColumn(name="In Progress", status="in_progress", position=2, color="#4ECDC4"),
+            BoardColumn(name="Impediment", status="impediment", position=3, color="#FF9F43"),
+            BoardColumn(name="Done", status="done", position=4, color="#96CEB4"),
+        ]
+    )
+    await board.insert()
+
     return {
         "id": _id_of(sprint),
         "name": sprint.name,
         "status": sprint.status,
+        "goal": sprint.goal,
         "start_date": sprint.start_date,
-        "end_date": sprint.end_date
+        "end_date": sprint.end_date,
+        "board_id": _id_of(board)
     }
 
 @router.post("/sprints/{sprint_id}/assign")
