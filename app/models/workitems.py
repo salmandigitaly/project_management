@@ -133,7 +133,7 @@ class Epic(Document):
 # ================= Sprints =================
 class Sprint(Document):
     name: str
-    project: Link[Project]
+    project: Optional[Link[Project]] = None
     goal: Optional[str] = None
     start_date: datetime
     end_date: datetime
@@ -143,6 +143,7 @@ class Sprint(Document):
     issue_ids: List[PydanticObjectId] = Field(default_factory=list)
     is_deleted: bool = Field(default=False)
     deleted_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     # issues: List[BackLink["Issue"]] = Field(default_factory=list)
 
     class Settings:
@@ -340,7 +341,7 @@ class BoardColumn(BaseModel):
 
 class Board(Document):
     name: str
-    project_id: str
+    project_id: Optional[str] = None
     sprint_id: Optional[str] = None
     columns: List[BoardColumn] = Field(default_factory=list)
     visible_to_roles: List[str] = Field(default_factory=list)   # [] => visible to all

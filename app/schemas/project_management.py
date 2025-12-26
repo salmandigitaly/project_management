@@ -150,7 +150,7 @@ class EpicOut(IDModel, TimeStampMixin):
 # -------- Sprint --------
 class SprintCreate(BaseModel):
     name: str
-    project_id: PydanticObjectId
+    project_id: Optional[PydanticObjectId] = None
     goal: Optional[str] = None
     start_date: datetime
     end_date: datetime

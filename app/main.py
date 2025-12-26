@@ -23,6 +23,7 @@ from app.routers.projects import *
 from app.routers.bulk_import import router as bulk_import_router
 from app.routers.reports import router as reports_router
 from app.routers.recycle_bin import router as recycle_bin_router
+from app.routers.global_pm import router as global_pm_router
 # add these imports
 from app.services.permission import PermissionService
 try:
@@ -99,6 +100,8 @@ if employees_router:
     app.include_router(employees_router, prefix=api_prefix)
 else:
     print("⚠️ employees router not found — /employees endpoints will not be shown in /docs")
+
+app.include_router(global_pm_router, prefix=api_prefix)
 
 # if employees_router is None, the app will skip including it (avoids NameError)
 
