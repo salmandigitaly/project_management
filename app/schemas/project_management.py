@@ -214,8 +214,8 @@ class IssueBase(BaseModel):
         t: Optional[IssueType] = values.get("type")
         if t == "subtask" and parent is None:
             raise ValueError("subtask requires parent")
-        if t != "subtask" and parent is not None:
-            raise ValueError("parent allowed only when type=subtask")
+        if t not in ("subtask", "task") and parent is not None:
+            raise ValueError("parent allowed only for subtask or task")
         return parent
 
 
@@ -251,8 +251,9 @@ class IssueCreate(BaseModel):
         t: Optional[IssueType] = values.get("type")
         if t == "subtask" and parent is None:
             raise ValueError("subtask requires parent")
-        if t != "subtask" and parent is not None:
-            raise ValueError("parent allowed only when type=subtask")
+        # allow both subtask and task to have a parent (consistent with model)
+        if t not in ("subtask", "task") and parent is not None:
+            raise ValueError("parent allowed only when type is subtask or task")
         return parent
 
 

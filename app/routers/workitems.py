@@ -492,6 +492,7 @@ class LinksRouter:
         if not l:
             raise HTTPException(status_code=404, detail="Link not found")
         return self._doc_link(l)
+
     async def create_link(self, data: LinkCreate, current_user: User = Depends(get_current_user)):
         # Validate that both source and target exist
         model_map = {
@@ -499,7 +500,8 @@ class LinksRouter:
             "epic": Epic,
             "sprint": Sprint,
             "issue": Issue,
-            "feature": Feature
+            "feature": Feature,
+            "user": User
         }
         
         source_model = model_map.get(data.source_type)
@@ -530,10 +532,8 @@ class LinksRouter:
         if not link:
             raise HTTPException(status_code=404, detail="Link not found")
 
-        # permission check removed: allow authenticated users to delete links
-
         await link.delete()
-        return {"message": "Link deleted"}
+        return {"id": link_id, "deleted": True}
 
     def _doc_link(self, l: LinkedWorkItem) -> Dict[str, Any]:
         return {

@@ -198,17 +198,16 @@ class Issue(Document):
     def _check_subtask_rules(cls, values):
         t = values.get("type")
         parent = values.get("parent")
-        sp = values.get("story_points")
 
-        # subtask must have parent; others must not
+        # allow both subtask and task to have a parent
+        allowed_with_parent = ("subtask", "task")
+
         if t == "subtask" and parent is None:
             raise ValueError("subtask requires parent")
-        if t != "subtask" and parent is not None:
-            raise ValueError("only subtasks can have parent")
+        
+        if t not in allowed_with_parent and parent is not None:
+            raise ValueError(f"Only {allowed_with_parent} can have a parent")
 
-        # story points only for stories
-        # if t != "story" and sp is not None:
-        #    raise ValueError("story_points allowed only for 'story'")
         return values
 
     @before_event(Delete)

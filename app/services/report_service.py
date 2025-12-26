@@ -6,6 +6,8 @@ from collections import Counter
 from app.models.workitems import Project, Issue, Epic, Sprint, Feature
 from app.models.users import User
 
+from beanie.operators import In
+
 logger = logging.getLogger(__name__)
 
 class ReportService:
