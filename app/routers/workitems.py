@@ -499,7 +499,10 @@ class LinksRouter:
             "project": Project,
             "epic": Epic,
             "sprint": Sprint,
-            "issue": Issue,
+            "story": Issue,
+            "task": Issue,
+            "bug": Issue,
+            "subtask": Issue,
             "feature": Feature,
             "user": User
         }

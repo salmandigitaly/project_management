@@ -27,7 +27,7 @@ Priority = Literal["highest", "high", "medium", "low", "lowest"]
 #Status = Literal["todo", "inprogress", "done"]
 Status = Literal["todo", "inprogress", "done", "backlog", "impediment"]
 Location = Literal["backlog", "sprint", "board", "archived"]
-WorkItemType = Literal["project", "epic", "sprint", "issue", "feature"]
+WorkItemType = Literal["project", "epic", "sprint", "story", "task", "bug", "subtask", "feature"]
 LinkReason = Literal["blocks", "is_blocked_by", "relates_to", "duplicates", "is_duplicated_by", "parent", "child"]
 
 FIB_POINTS = {0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89}
