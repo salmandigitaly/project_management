@@ -1,9 +1,12 @@
 from app.core.config import settings
 print("✅ Loaded Mongo URL:", settings.MONGODB_URL)
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
+from bson.errors import InvalidId
+from pydantic import ValidationError
 
 from app.core.database import init_db
 from app.routers.boards import *
@@ -37,6 +40,20 @@ except Exception:
         employees_router = None
 
 app = FastAPI(title="Project Management(HRMS)")  # or existing app
+
+@app.exception_handler(InvalidId)
+async def invalid_id_handler(request: Request, exc: InvalidId):
+    return JSONResponse(
+        status_code=400,
+        content={"detail": f"Invalid ID format: {str(exc)}"},
+    )
+
+@app.exception_handler(ValidationError)
+async def validation_error_handler(request: Request, exc: ValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors() if hasattr(exc, "errors") else str(exc)},
+    )
 
 # CORS
 app.add_middleware(

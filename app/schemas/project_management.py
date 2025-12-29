@@ -22,7 +22,9 @@ class IDModel(BaseModel):
 
     class Config:
         allow_population_by_field_name = True
+        populate_by_name = True # Pydantic V2 alias compatibility
         orm_mode = True
+        from_attributes = True # Pydantic V2 alias for orm_mode
 
 
 class TimeStampMixin(BaseModel):
@@ -477,6 +479,17 @@ class FeatureOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+class ProjectDocumentOut(IDModel, TimeStampMixin):
+    project_id: PydanticObjectId
+    name: str
+    description: Optional[str] = None
+    file_path: str
+    file_type: str
+    content_type: str
+    tags: List[str] = []
+    uploaded_by: PydanticObjectId
+    uploaded_by_name: Optional[str] = None
 
 class RecycleBinItem(BaseModel):
     id: str

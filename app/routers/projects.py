@@ -43,7 +43,13 @@ except Exception:
 
 from bson import ObjectId
 from bson.dbref import DBRef
+from bson import ObjectId
+from bson.dbref import DBRef
 import logging
+import os
+import shutil
+from fastapi import File, UploadFile, Form
+from app.models.workitems import ProjectDocument
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +108,10 @@ class ProjectsController(BaseController):
         self.router.add_api_route("/{project_id}", self.delete_project, methods=["DELETE"])
         self.router.add_api_route("/{project_id}/members", self.assign_member, methods=["POST"], response_model=ProjectOut)
         self.router.add_api_route("/{project_id}/members/{user_id}", self.remove_member, methods=["DELETE"], response_model=ProjectOut)
+        
+        # Document endpoints
+        self.router.add_api_route("/{project_id}/documents", self.upload_document, methods=["POST"], response_model=dict)
+        self.router.add_api_route("/{project_id}/documents/{document_id}", self.update_document, methods=["PUT"], response_model=dict)
 # ...existing code...
 
     async def _user_from_id(self, user_id):
@@ -248,8 +258,35 @@ class ProjectsController(BaseController):
                 # fallback: leave issues_list empty on any error
                 issues_list = []
         data["issues"] = issues_list
+        data["issues"] = issues_list
         data["issues_count"] = issues_count
         data["subtasks_count"] = subtasks_count
+
+        # populate documents
+        documents_list = []
+        if ProjectDocument is not _Any:
+            try:
+                # Use raw query with explicit ObjectId for Link matching
+                docs = await ProjectDocument.find({"project.$id": ObjectId(str(project.id))}).to_list()
+                for d in docs:
+                    uploader = await _get_user_summary_dict(d.uploaded_by)
+                    documents_list.append({
+                        "id": str(d.id),
+                        "project_id": str(project.id),
+                        "name": d.name,
+                        "description": d.description,
+                        "file_path": d.file_path,
+                        "file_type": d.file_type,
+                        "content_type": d.content_type,
+                        "tags": d.tags,
+                        "uploaded_by": str(d.uploaded_by.id) if d.uploaded_by else None,
+                        "uploaded_by_name": uploader["name"] if uploader else None,
+                        "created_at": d.created_at,
+                        "updated_at": d.updated_at
+                    })
+            except Exception:
+                pass
+        data["documents"] = documents_list
 
         # populate comments (project-level only)
         comments_list = []
@@ -630,6 +667,160 @@ class ProjectsController(BaseController):
         await project.set(update)
         project = await Project.get(project_id)
         return await self.to_response(project)
+
+    async def upload_document(
+        self,
+        project_id: str,
+        file: UploadFile = File(...),
+        name: Optional[str] = Form(None),
+        description: Optional[str] = Form(None),
+        tags: Optional[str] = Form(None),  # Comma-separated tags
+        current_user: User = Depends(get_current_user)
+    ):
+        """
+        Upload a document (Word, Excel, Image, Text) to the project.
+        """
+        project = await Project.get(project_id)
+        if not project or project.is_deleted:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Basic permission check
+        is_admin = current_user.role == "admin"
+        is_member = str(current_user.id) in project.members
+        if not (is_admin or is_member):
+            raise HTTPException(status_code=403, detail="Not authorized to upload documents to this project")
+
+        # Ensure uploads directory exists
+        upload_dir = os.path.join("uploads", str(project_id))
+        os.makedirs(upload_dir, exist_ok=True)
+
+        # Generate unique filename to prevent overwrites
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        safe_filename = f"{timestamp}_{file.filename}"
+        file_path = os.path.join(upload_dir, safe_filename)
+
+        # Save file
+        try:
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+        except Exception as e:
+            logger.error(f"File upload failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to save file")
+
+        # Parse tags
+        tag_list = []
+        if tags:
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+        # Determine content type / extension if missing
+        content_type = file.content_type or "application/octet-stream"
+        _, ext = os.path.splitext(file.filename)
+
+        # Create document record
+        doc = ProjectDocument(
+            project=project,
+            name=name or file.filename,
+            description=description,
+            file_path=file_path,
+            file_type=ext.lower(),
+            content_type=content_type,
+            tags=tag_list,
+            uploaded_by=current_user
+        )
+        await doc.insert()
+
+        # Return schemas.ProjectDocumentOut
+        return {
+            "id": str(doc.id),
+            "project_id": str(project.id),
+            "name": doc.name,
+            "description": doc.description,
+            "file_path": doc.file_path,
+            "file_type": doc.file_type,
+            "content_type": doc.content_type,
+            "tags": doc.tags,
+            "uploaded_by": str(current_user.id),
+            "uploaded_by_name": getattr(current_user, "name", None) or getattr(current_user, "full_name", None) or "Unknown",
+            "created_at": doc.created_at,
+            "updated_at": doc.updated_at
+        }
+
+    async def update_document(
+        self,
+        project_id: str,
+        document_id: str,
+        name: Optional[str] = Form(None),
+        description: Optional[str] = Form(None),
+        tags: Optional[str] = Form(None),
+        file: Optional[UploadFile] = File(None),
+        current_user: User = Depends(get_current_user)
+    ):
+        """
+        Update document metadata or replace the file.
+        """
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        doc = await ProjectDocument.get(document_id)
+        if not doc or str(_link_id(doc.project)) != project_id:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Update metadata
+        if name is not None:
+            doc.name = name
+        if description is not None:
+            doc.description = description
+        if tags is not None:
+            doc.tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+        # Replace file if provided
+        if file:
+            upload_dir = os.path.join("uploads", str(project_id))
+            os.makedirs(upload_dir, exist_ok=True)
+            timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            safe_filename = f"{timestamp}_{file.filename}"
+            file_path = os.path.join(upload_dir, safe_filename)
+            
+            try:
+                # remove old file if exists? (Optional, maybe keep history)
+                # if os.path.exists(doc.file_path):
+                #     os.remove(doc.file_path)
+                with open(file_path, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+                
+                doc.file_path = file_path
+                doc.content_type = file.content_type or "application/octet-stream"
+                _, ext = os.path.splitext(file.filename)
+                doc.file_type = ext.lower()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail="Failed to save new file")
+
+        doc.updated_at = datetime.utcnow()
+        await doc.save()
+
+        # Return updated document
+        # Resolve uploader name
+        uploader = await self._user_from_id(_link_id(doc.uploaded_by))
+        uploader_name = getattr(uploader, "name", None) or getattr(uploader, "full_name", None) or "Unknown"
+
+        return {
+            "id": str(doc.id),
+            "project_id": str(project.id),
+            "name": doc.name,
+            "description": doc.description,
+            "file_path": doc.file_path,
+            "file_type": doc.file_type,
+            "content_type": doc.content_type,
+            "tags": doc.tags,
+            "file_type": doc.file_type,
+            "content_type": doc.content_type,
+            "tags": doc.tags,
+            "uploaded_by": str(_link_id(doc.uploaded_by)),
+            "uploaded_by_name": uploader_name,
+            "created_at": doc.created_at,
+            "updated_at": doc.updated_at
+        }
 # ...existing code...
 
 # helper to load a single user summary
@@ -677,6 +868,5 @@ async def _build_members_from_roles(member_roles: Optional[Dict[str, str]]) -> L
             )
         )
     return members
-
 
 projects_router = ProjectsController().router

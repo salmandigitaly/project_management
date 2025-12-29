@@ -300,6 +300,24 @@ class LinkedWorkItem(Document):
         use_state_management = True
 
 
+# ================= Project Documents =================
+class ProjectDocument(Document):
+    project: Link[Project]
+    name: str
+    description: Optional[str] = None
+    file_path: str
+    file_type: str  # extension e.g. .docx, .pdf
+    content_type: str  # mime type
+    tags: List[str] = Field(default_factory=list)
+    uploaded_by: Link[User]
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "project_documents"
+        use_state_management = True
+
+
 # ================= Time tracking =================
 class TimeEntry(Document):
     project: Link[Project]

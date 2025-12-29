@@ -63,7 +63,20 @@ async def get_current_user_dependency(authorization: Optional[str] = Header(None
             detail="Invalid token type - Use access token",
         )
     
-    user = await User.find_one(User.email == email)
+    try:
+        user = await User.find_one(User.email == email)
+    except Exception as e:
+        from pymongo.errors import ServerSelectionTimeoutError
+        if isinstance(e, ServerSelectionTimeoutError):
+            raise HTTPException(
+                status_code=503,
+                detail="Database unavailable. Please try again later.",
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Internal server error while retrieving user.",
+            )
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
