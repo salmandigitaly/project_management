@@ -439,6 +439,7 @@ async def _project_cascade_delete(sender, document, **kwargs):
 
         # models to consider for deletion (order: dependent -> children)
         models = [
+            globals().get("ProjectDocument"),
             globals().get("LinkedWorkItem"),
             globals().get("Comment"),
             globals().get("TimeEntry"),

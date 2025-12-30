@@ -1,6 +1,7 @@
 # app/routers/projects.py
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, File, UploadFile, Form
+from fastapi.responses import FileResponse
 from datetime import datetime
 from app.routers.auth import get_current_user
 from app.models.users import User
@@ -111,7 +112,11 @@ class ProjectsController(BaseController):
         
         # Document endpoints
         self.router.add_api_route("/{project_id}/documents", self.upload_document, methods=["POST"], response_model=dict)
+        self.router.add_api_route("/{project_id}/documents", self.list_documents, methods=["GET"], response_model=list)
+        self.router.add_api_route("/{project_id}/documents/{document_id}", self.get_document, methods=["GET"], response_model=dict)
         self.router.add_api_route("/{project_id}/documents/{document_id}", self.update_document, methods=["PUT"], response_model=dict)
+        self.router.add_api_route("/{project_id}/documents/{document_id}", self.delete_document, methods=["DELETE"])
+        self.router.add_api_route("/{project_id}/documents/{document_id}/download", self.download_document, methods=["GET"])
 # ...existing code...
 
     async def _user_from_id(self, user_id):
@@ -813,6 +818,84 @@ class ProjectsController(BaseController):
             "file_type": doc.file_type,
             "content_type": doc.content_type,
             "tags": doc.tags,
+            "uploaded_by": str(_link_id(doc.uploaded_by)),
+            "uploaded_by_name": uploader_name,
+            "created_at": doc.created_at,
+            "updated_at": doc.updated_at
+        }
+
+    async def list_documents(
+        self,
+        project_id: str,
+        current_user: User = Depends(get_current_user)
+    ):
+        """
+        List all documents for a project.
+        """
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Permission check
+        is_admin = current_user.role == "admin"
+        is_member = str(current_user.id) in (project.members or {})
+        if not (is_admin or is_member):
+            raise HTTPException(status_code=403, detail="Not authorized to view documents for this project")
+
+        docs = await ProjectDocument.find(ProjectDocument.project.id == project.id).to_list()
+        
+        result = []
+        for doc in docs:
+            uploader = await self._user_from_id(_link_id(doc.uploaded_by))
+            uploader_name = getattr(uploader, "name", None) or getattr(uploader, "full_name", None) or "Unknown"
+            result.append({
+                "id": str(doc.id),
+                "project_id": str(project.id),
+                "name": doc.name,
+                "description": doc.description,
+                "file_path": doc.file_path,
+                "file_type": doc.file_type,
+                "content_type": doc.content_type,
+                "tags": doc.tags,
+                "uploaded_by": str(_link_id(doc.uploaded_by)),
+                "uploaded_by_name": uploader_name,
+                "created_at": doc.created_at,
+                "updated_at": doc.updated_at
+            })
+        return result
+
+    async def get_document(
+        self,
+        project_id: str,
+        document_id: str,
+        current_user: User = Depends(get_current_user)
+    ):
+        """
+        Get details of a single document.
+        """
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        doc = await ProjectDocument.get(document_id)
+        if not doc or str(_link_id(doc.project)) != project_id:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Permission check
+        is_admin = current_user.role == "admin"
+        is_member = str(current_user.id) in (project.members or {})
+        if not (is_admin or is_member):
+            raise HTTPException(status_code=403, detail="Not authorized to view document details")
+
+        uploader = await self._user_from_id(_link_id(doc.uploaded_by))
+        uploader_name = getattr(uploader, "name", None) or getattr(uploader, "full_name", None) or "Unknown"
+
+        return {
+            "id": str(doc.id),
+            "project_id": str(project.id),
+            "name": doc.name,
+            "description": doc.description,
+            "file_path": doc.file_path,
             "file_type": doc.file_type,
             "content_type": doc.content_type,
             "tags": doc.tags,
@@ -821,6 +904,72 @@ class ProjectsController(BaseController):
             "created_at": doc.created_at,
             "updated_at": doc.updated_at
         }
+
+    async def delete_document(
+        self,
+        project_id: str,
+        document_id: str,
+        current_user: User = Depends(get_current_user)
+    ):
+        """
+        Permanently delete a document and its file.
+        """
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        doc = await ProjectDocument.get(document_id)
+        if not doc or str(_link_id(doc.project)) != project_id:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Permission: admin or uploader or project member
+        is_admin = current_user.role == "admin"
+        is_uploader = str(current_user.id) == str(_link_id(doc.uploaded_by))
+        is_member = str(current_user.id) in (project.members or {})
+        if not (is_admin or is_uploader or is_member):
+             raise HTTPException(status_code=403, detail="Not authorized to delete this document")
+
+        # Delete file from filesystem
+        if os.path.exists(doc.file_path):
+            try:
+                os.remove(doc.file_path)
+            except Exception as e:
+                logger.error(f"Failed to delete file {doc.file_path}: {e}")
+
+        await doc.delete()
+        return {"id": document_id, "deleted": True}
+
+    async def download_document(
+        self,
+        project_id: str,
+        document_id: str,
+        current_user: User = Depends(get_current_user)
+    ):
+        """
+        Download the actual document file.
+        """
+        project = await Project.get(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        doc = await ProjectDocument.get(document_id)
+        if not doc or str(_link_id(doc.project)) != project_id:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Permission check
+        is_admin = current_user.role == "admin"
+        is_member = str(current_user.id) in (project.members or {})
+        if not (is_admin or is_member):
+            raise HTTPException(status_code=403, detail="Not authorized to download this document")
+
+        if not os.path.exists(doc.file_path):
+            raise HTTPException(status_code=404, detail="File not found on disk")
+
+        return FileResponse(
+            path=doc.file_path,
+            filename=doc.name,
+            media_type=doc.content_type
+        )
 # ...existing code...
 
 # helper to load a single user summary
