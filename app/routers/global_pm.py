@@ -82,6 +82,47 @@ async def _resolve_status_name(status_id: str) -> str:
     
     # 3. Fallback to title case of the ID itself if it looks readable
     return status_id.replace("_", " ").title()
+    
+async def _doc_global_issue(i: Issue) -> Dict[str, Any]:
+    """Helper to convert Issue document to a dict with project_key."""
+    res = {
+        "id": _id_of(i),
+        "name": i.name,
+        "key": getattr(i, "key", None),
+        "type": i.type,
+        "project_id": _id_of(i.project),
+        "project_key": None,
+        "priority": i.priority,
+        "status": i.status,
+        "created_at": i.created_at,
+        "assignee_id": _id_of(i.assignee)
+    }
+    if i.project:
+        try:
+            if hasattr(i.project, 'key'):
+                res["project_key"] = i.project.key
+            else:
+                project_doc = await i.project.fetch()
+                res["project_key"] = project_doc.key
+        except Exception:
+            res["project_key"] = None
+    return res
+
+@router.get("/issues", response_model=List[Dict[str, Any]])
+async def list_all_global_issues(current_user: User = Depends(get_current_user)):
+    """
+    Get all issues across all projects (done or not).
+    """
+    issues = await Issue.find(Issue.is_deleted != True).to_list()
+    
+    result = []
+    is_admin = getattr(current_user, "role", None) == "admin"
+    
+    for i in issues:
+        pid = _id_of(i.project)
+        if pid and (is_admin or await PermissionService.can_view_project(pid, str(current_user.id))):
+            result.append(await _doc_global_issue(i))
+    return result
 
 @router.get("/backlog", response_model=List[Dict[str, Any]])
 async def list_global_backlog(current_user: User = Depends(get_current_user)):
@@ -98,17 +139,8 @@ async def list_global_backlog(current_user: User = Depends(get_current_user)):
     
     for i in issues:
         pid = _id_of(i.project)
-        if is_admin or await PermissionService.can_view_project(pid, str(current_user.id)):
-            result.append({
-                "id": _id_of(i),
-                "name": i.name,
-                "key": getattr(i, "key", None),
-                "type": i.type,
-                "project_id": pid,
-                "priority": i.priority,
-                "status": i.status,
-                "created_at": i.created_at
-            })
+        if pid and (is_admin or await PermissionService.can_view_project(pid, str(current_user.id))):
+            result.append(await _doc_global_issue(i))
     return result
 
 @router.get("/sprints", response_model=List[Dict[str, Any]])
@@ -191,14 +223,7 @@ async def list_completed_global_sprints(current_user: User = Depends(get_current
         if s.issue_ids:
             issues = await Issue.find(In(Issue.id, s.issue_ids)).to_list()
             for i in issues:
-                issues_list.append({
-                    "id": _id_of(i),
-                    "name": i.name,
-                    "key": getattr(i, "key", None),
-                    "type": i.type,
-                    "status": i.status,
-                    "project_id": _id_of(i.project)
-                })
+                issues_list.append(await _doc_global_issue(i))
 
         result.append({
             "id": _id_of(s),
@@ -550,15 +575,7 @@ async def get_global_board(sprint_id: str, current_user: User = Depends(get_curr
         col_issues = []
         for i in issues:
             if _normalize_status(i.status) == _normalize_status(col.status):
-                col_issues.append({
-                    "id": str(i.id),
-                    "name": i.name,
-                    "key": getattr(i, "key", None),
-                    "type": i.type,
-                    "priority": i.priority,
-                    "status": i.status,
-                    "assignee_id": _id_of(i.assignee)
-                })
+                col_issues.append(await _doc_global_issue(i))
         
         columns_data.append({
             "column_info": {
@@ -631,16 +648,7 @@ async def get_global_sprint_stats(
     for i in issues:
         status = i.status or "todo"
         status_distribution[status] = status_distribution.get(status, 0) + 1
-        issues_list.append({
-            "id": _id_of(i),
-            "name": i.name,
-            "key": getattr(i, "key", None),
-            "type": i.type,
-            "priority": i.priority,
-            "status": i.status,
-            "project_id": _id_of(i.project),
-            "assignee_id": _id_of(i.assignee)
-        })
+        issues_list.append(await _doc_global_issue(i))
         
     return {
         "sprint_id": sprint_id,

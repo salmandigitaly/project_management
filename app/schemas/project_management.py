@@ -287,6 +287,7 @@ class IssueUpdate(BaseModel):
 class IssueOut(BaseModel):
     id: str
     project_id: PydanticObjectId
+    project_key: Optional[str] = None
     epic_id: Optional[PydanticObjectId] = None
     sprint_id: Optional[PydanticObjectId] = None
     feature_id: Optional[PydanticObjectId] = None

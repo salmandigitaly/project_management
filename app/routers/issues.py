@@ -59,6 +59,7 @@ class IssuesRouter:
     def setup_routes(self):
         deps = [Depends(security), Depends(get_current_user)]
         self.router.add_api_route("/", self.list_issues, methods=["GET"], dependencies=deps)
+        self.router.add_api_route("/project/{project_key}", self.list_project_issues, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/", self.create_issue, methods=["POST"], dependencies=deps)
         self.router.add_api_route("/{issue_id}", self.get_issue, methods=["GET"], dependencies=deps)
         self.router.add_api_route("/{issue_id}", self.update_issue, methods=["PUT"], dependencies=deps)
@@ -93,12 +94,41 @@ class IssuesRouter:
         # Return issues with epic details
         return [await self._doc_issue_with_epic(i) for i in issues]
     
+    async def list_project_issues(
+        self,
+        project_key: str = Path(...),
+        current_user: User = Depends(get_current_user),
+    ):
+        """
+        GET /issues/project/{project_key}
+        Returns all issues (done or not) for a given project key.
+        """
+        project = await Project.find_one(Project.key == project_key)
+        if not project:
+            # Fallback: check if it's a project ID
+            try:
+                project = await Project.get(project_key)
+            except Exception:
+                project = None
+
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        if not await PermissionService.can_view_project(str(project.id), str(current_user.id)):
+            raise HTTPException(status_code=403, detail="No access to project")
+
+        issues = await Issue.find(Issue.project.id == project.id, Issue.is_deleted != True).to_list()
+        
+        # Return issues with epic details
+        return [await self._doc_issue_with_epic(i) for i in issues]
+    
 
     async def _doc_issue_with_epic(self, i: Issue) -> Dict[str, Any]:
         issue_data = {
             "id": _id_of(i),
             "key": getattr(i, "key", None),
             "project_id": _id_of(i.project),
+            "project_key": None,
             "epic_id": _id_of(i.epic),
             "epic_name": None,  # Initialize as None
             "sprint_id": _id_of(i.sprint),
@@ -131,6 +161,17 @@ class IssuesRouter:
                     issue_data["epic_name"] = epic_doc.name
             except Exception:
                 issue_data["epic_name"] = None
+        
+        # Add project key
+        if i.project:
+            try:
+                if hasattr(i.project, 'key'):
+                    issue_data["project_key"] = i.project.key
+                else:
+                    project_doc = await i.project.fetch()
+                    issue_data["project_key"] = project_doc.key
+            except Exception:
+                issue_data["project_key"] = None
         
         return issue_data
 
@@ -517,10 +558,11 @@ class IssuesRouter:
                 "comment": c.comment,
                 "created_at": getattr(c, "created_at", None),
             })
-        return {
+        issue_data = {
             "id": _id_of(i),
             "key": getattr(i, "key", None),
             "project_id": _id_of(i.project),
+            "project_key": None,
             "epic_id": _id_of(i.epic),
             "sprint_id": _id_of(i.sprint),
             "type": i.type,
@@ -542,5 +584,17 @@ class IssuesRouter:
             "feature_id": _id_of(getattr(i, "feature", None) or getattr(i, "feature_id", None)),
             "comments": comments_list,
         }
+        
+        # Add project key
+        if i.project:
+            try:
+                if hasattr(i.project, 'key'):
+                    issue_data["project_key"] = i.project.key
+                else:
+                    project_doc = await i.project.fetch()
+                    issue_data["project_key"] = project_doc.key
+            except Exception:
+                issue_data["project_key"] = None
+        return issue_data
 
 issues_router = IssuesRouter().router
