@@ -265,9 +265,27 @@ class BulkImportService:
             if data.get("assignee_email"):
                 assignee = await User.find_one(User.email == data["assignee_email"])
             
+            # Enforce hierarchy rules
+            # 1. Story -> can only have Tasks
+            # 2. Task -> can only have Subtasks
+            child_type = data["type"].lower()
+            parent_type = parent_issue.type.lower()
+            
+            if child_type == "task" and parent_type != "story":
+                self.errors.append(f"Hierarchy Error: Row {data.get('row_idx', 'unknown')}: A 'task' can only be created under a 'story'. Parent '{parent_issue.name}' is a '{parent_type}'.")
+                return
+            
+            if child_type == "subtask" and parent_type != "task":
+                self.errors.append(f"Hierarchy Error: Row {data.get('row_idx', 'unknown')}: A 'subtask' can only be created under a 'task'. Parent '{parent_issue.name}' is a '{parent_type}'.")
+                return
+            
+            if child_type not in ["task", "subtask"]:
+                self.errors.append(f"Hierarchy Error: Row {data.get('row_idx', 'unknown')}: Invalid child type '{child_type}'. Only 'task' and 'subtask' are allowed as children.")
+                return
+
             subtask = Issue(
                 project=project,
-                type="subtask",
+                type=data["type"],
                 name=data["name"],
                 description=data.get("description"),
                 priority=data.get("priority", "medium"),

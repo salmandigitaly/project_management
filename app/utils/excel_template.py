@@ -114,7 +114,7 @@ def generate_excel_template() -> Workbook:
     # Sheet 6: Subtasks
     ws_subtasks = wb.create_sheet("Subtasks")
     headers = [
-        "project_key", "parent_issue_name", "name", "description",
+        "project_key", "parent_issue_name", "type", "name", "description",
         "priority", "status", "assignee_email", "estimated_hours"
     ]
     ws_subtasks.append(headers)
@@ -123,14 +123,27 @@ def generate_excel_template() -> Workbook:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
     
+    # Correct examples: Story -> Task, and Task -> Subtask
     ws_subtasks.append([
         "PROJ",
-        "Login Feature",
-        "Design login UI",
-        "Create mockups and wireframes",
+        "Login Feature",  # This is a Story in the Issues sheet
+        "task",           # Correct: Task under Story
+        "Implement Auth Logic",
+        "Backend logic for JWT",
+        "high",
+        "todo",
+        "dev@company.com",
+        4.0
+    ])
+    ws_subtasks.append([
+        "PROJ",
+        "Implement Auth Logic", # This is the Task we just defined above
+        "subtask",              # Correct: Subtask under Task
+        "Design DB Schema",
+        "Create user table",
         "medium",
         "todo",
-        "designer@company.com",
+        "dev@company.com",
         2.0
     ])
     

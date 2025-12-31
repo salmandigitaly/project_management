@@ -214,8 +214,10 @@ class ExcelParser:
                 continue
             
             subtask = {
+                "row_idx": idx + 2,
                 "project_key": str(row["project_key"]).strip().upper(),
                 "parent_issue_name": str(row["parent_issue_name"]).strip(),
+                "type": str(row.get("type", "subtask")).strip().lower(),
                 "name": str(row["name"]).strip(),
                 "description": str(row.get("description", "")).strip() if not pd.isna(row.get("description")) else None,
                 "priority": str(row.get("priority", "medium")).strip().lower(),
