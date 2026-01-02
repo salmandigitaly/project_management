@@ -179,6 +179,7 @@ class Issue(Document):
     location: Location = "backlog"
     is_deleted: bool = Field(default=False)
     deleted_at: Optional[datetime] = None
+    tags: List[str] = Field(default_factory=list)
 
     # backlinks
     # subtasks: List[BackLink["Issue"]] = Field(default_factory=list)

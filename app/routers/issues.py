@@ -207,6 +207,7 @@ class IssuesRouter:
                  description=data.description,
                  priority=data.priority,
                  assignee=assignee,
+                 tags=data.tags,
                  parent=parent,
                  story_points=data.story_points,
                  estimated_hours=data.estimated_hours,
@@ -503,6 +504,7 @@ class IssuesRouter:
         self,
         issue_id: str,
         assignee_id: Optional[str] = Body(None, embed=True),
+        tags: Optional[List[str]] = Body(None, embed=True),
         current_user: User = Depends(get_current_user)
     ):
         """
@@ -525,6 +527,9 @@ class IssuesRouter:
             if not user:
                 raise HTTPException(status_code=404, detail="Assignee user not found")
             issue.assignee = user
+        
+        if tags is not None:
+            issue.tags = tags
 
         issue.updated_by = current_user
         issue.updated_at = datetime.utcnow()
@@ -580,6 +585,7 @@ class IssuesRouter:
             "created_at": getattr(i, "created_at", None),
             "updated_at": getattr(i, "updated_at", None),
             "location": i.location,
+            "tags": getattr(i, "tags", []) or [],
             # safe: support either a linked Feature (i.feature) or plain feature_id field
             "feature_id": _id_of(getattr(i, "feature", None) or getattr(i, "feature_id", None)),
             "comments": comments_list,

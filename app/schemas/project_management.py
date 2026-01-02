@@ -236,6 +236,7 @@ class IssueCreate(BaseModel):
     story_points: Optional[int] = None
     estimated_hours: Optional[float] = None
     location: Literal["backlog", "sprint", "board"] = "backlog"
+    tags: List[str] = Field(default_factory=list)
 
     @validator("story_points")
     def validate_points(cls, v, values):
@@ -274,6 +275,7 @@ class IssueUpdate(BaseModel):
     location: Optional[Literal["backlog", "sprint", "board"]] = None
     updated_by: Optional[PydanticObjectId] = None
     updated_at: Optional[datetime] = None
+    tags: Optional[List[str]] = None
 
     @validator("story_points")
     def _val_points(cls, v):
@@ -306,6 +308,7 @@ class IssueOut(BaseModel):
     location: Literal["backlog", "sprint", "board"]
     is_deleted: bool = False
     deleted_at: Optional[datetime] = None
+    tags: List[str] = []
     comments: Optional[List["CommentOut"]] = None
 
 
