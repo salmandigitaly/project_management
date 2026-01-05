@@ -283,7 +283,9 @@ class IssuesRouter:
             # also persist feature id field
             issue.feature_id = PydanticObjectId(feature_id) if feature_id else None
 
-        await issue.set(payload)
+        # Update other fields locally
+        for key, value in payload.items():
+            setattr(issue, key, value)
         issue.updated_by = current_user
         issue.updated_at = datetime.utcnow()
         await issue.save()
