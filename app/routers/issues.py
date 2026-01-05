@@ -2,8 +2,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, File, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer
+import os
+import shutil
 from typing import List
 from beanie import PydanticObjectId
 from bson import ObjectId
@@ -12,7 +15,7 @@ from pydantic.error_wrappers import ValidationError
 from app.routers.auth import get_current_user
 from app.models.users import User
 from app.models.workitems import (
-    Project, Epic, Feature, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem, Backlog
+    Project, Epic, Feature, Issue, Sprint, Comment, TimeEntry, LinkedWorkItem, Backlog, IssueAttachment
 )
 from app.schemas.project_management import (
     EpicCreate, EpicUpdate, EpicOut,
@@ -22,6 +25,7 @@ from app.schemas.project_management import (
     CommentCreate, CommentOut,
     LinkCreate, LinkOut,
     TimeClockIn, TimeClockOut, TimeAddManual, TimeEntryOut,
+    IssueAttachmentOut,
 )
 
 from app.services.permission import PermissionService
@@ -70,6 +74,12 @@ class IssuesRouter:
         self.router.add_api_route("/sprints/{sprint_id}/issues/{issue_id}", self.remove_issue_from_sprint, methods=["DELETE"], dependencies=deps)
         # assign/unassign an issue (PATCH) - body: {"assignee_id": "<user_id>" } or {"assignee_id": null} to unassign
         self.router.add_api_route("/{issue_id}/assign", self.assign_issue, methods=["PATCH"], dependencies=deps)
+
+        # Attachment endpoints
+        self.router.add_api_route("/{issue_id}/attachments", self.upload_attachment, methods=["POST"], dependencies=deps)
+        self.router.add_api_route("/{issue_id}/attachments", self.list_attachments, methods=["GET"], dependencies=deps)
+        self.router.add_api_route("/{issue_id}/attachments/{attachment_id}/download", self.download_attachment, methods=["GET"], dependencies=deps)
+        self.router.add_api_route("/{issue_id}/attachments/{attachment_id}", self.delete_attachment, methods=["DELETE"], dependencies=deps)
 
     async def list_issues(
         self,
@@ -536,6 +546,121 @@ class IssuesRouter:
         await issue.save()
 
         return await self._doc_issue(issue)
+
+    async def upload_attachment(
+        self,
+        issue_id: str = Path(...),
+        file: UploadFile = File(...),
+        current_user: User = Depends(get_current_user)
+    ):
+        issue = await Issue.get(issue_id)
+        if not issue:
+            raise HTTPException(status_code=404, detail="Issue not found")
+            
+        project_id = _id_of(issue.project)
+        if not await PermissionService.can_view_project(project_id, str(current_user.id)):
+             raise HTTPException(status_code=403, detail="No access to project")
+             
+        upload_dir = os.path.join("uploads", "issues", issue_id)
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        safe_filename = f"{timestamp}_{file.filename}"
+        file_path = os.path.join(upload_dir, safe_filename)
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        att = IssueAttachment(
+            issue=issue,
+            project=issue.project,
+            name=file.filename,
+            file_path=file_path,
+            file_type=os.path.splitext(file.filename)[1].lower(),
+            content_type=file.content_type or "application/octet-stream",
+            uploaded_by=current_user
+        )
+        await att.insert()
+        
+        return await self._doc_att(att)
+
+    async def list_attachments(
+        self,
+        issue_id: str = Path(...),
+        current_user: User = Depends(get_current_user)
+    ):
+        issue = await Issue.get(issue_id)
+        if not issue:
+            raise HTTPException(status_code=404, detail="Issue not found")
+            
+        project_id = _id_of(issue.project)
+        if not await PermissionService.can_view_project(project_id, str(current_user.id)):
+             raise HTTPException(status_code=403, detail="No access to project")
+             
+        attachments = await IssueAttachment.find(IssueAttachment.issue.id == PydanticObjectId(issue_id)).to_list()
+        return [await self._doc_att(att) for att in attachments]
+
+    async def download_attachment(
+        self,
+        issue_id: str = Path(...),
+        attachment_id: str = Path(...),
+        current_user: User = Depends(get_current_user)
+    ):
+        att = await IssueAttachment.get(attachment_id)
+        if not att or _id_of(att.issue) != issue_id:
+             raise HTTPException(status_code=404, detail="Attachment not found")
+             
+        project_id = _id_of(att.project)
+        if not await PermissionService.can_view_project(project_id, str(current_user.id)):
+             raise HTTPException(status_code=403, detail="No access to project")
+             
+        if not os.path.exists(att.file_path):
+            raise HTTPException(status_code=404, detail="File not found on disk")
+            
+        return FileResponse(att.file_path, filename=att.name, media_type=att.content_type)
+
+    async def delete_attachment(
+        self,
+        issue_id: str = Path(...),
+        attachment_id: str = Path(...),
+        current_user: User = Depends(get_current_user)
+    ):
+        att = await IssueAttachment.get(attachment_id)
+        if not att or _id_of(att.issue) != issue_id:
+             raise HTTPException(status_code=404, detail="Attachment not found")
+             
+        project_id = _id_of(att.project)
+        is_admin = current_user.role == "admin"
+        is_uploader = _id_of(att.uploaded_by) == str(current_user.id)
+        
+        if not is_admin and not is_uploader:
+             if not await PermissionService.can_view_project(project_id, str(current_user.id)):
+                  raise HTTPException(status_code=403, detail="No access to delete attachment")
+        
+        if os.path.exists(att.file_path):
+            try:
+                os.remove(att.file_path)
+            except Exception:
+                pass
+                
+        await att.delete()
+        return {"id": attachment_id, "deleted": True}
+
+    async def _doc_att(self, att: IssueAttachment) -> Dict[str, Any]:
+        uploader = await User.get(_id_of(att.uploaded_by))
+        uploader_name = getattr(uploader, "name", None) or getattr(uploader, "full_name", None) or "Unknown"
+        return {
+            "id": str(att.id),
+            "issue_id": _id_of(att.issue),
+            "project_id": _id_of(att.project),
+            "name": att.name,
+            "file_path": att.file_path,
+            "file_type": att.file_type,
+            "content_type": att.content_type,
+            "uploaded_by": _id_of(att.uploaded_by),
+            "uploaded_by_name": uploader_name,
+            "created_at": att.created_at
+        }
 
     async def _doc_issue(self, i: Issue) -> Dict[str, Any]:
         comments = await Comment.find(Comment.issue.id == i.id).to_list()

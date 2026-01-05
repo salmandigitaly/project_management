@@ -5,7 +5,7 @@ from app.core.config import MONGO_URI, DB_NAME, settings
 
 # import only model classes (some may not be Document subclasses)
 from app.models.users import User
-from app.models.workitems import Project, Epic, Issue, Sprint, Feature, Board, Backlog, Comment, TimeEntry, LinkedWorkItem, ProjectDocument  # adjust to your model list
+from app.models.workitems import Project, Epic, Issue, Sprint, Feature, Board, Backlog, Comment, TimeEntry, LinkedWorkItem, ProjectDocument, WikiPage, WikiAsset, IssueAttachment
 from app.models.employee import Attendance, LeaveRequest
 
 async def init_db():
@@ -24,11 +24,13 @@ async def init_db():
         Feature,
         TimeEntry,
         Comment,
-        Attendance,
+        Attendance, 
         LeaveRequest,
         LinkedWorkItem,
         ProjectDocument,
-        # add additional Document classes here
+        WikiPage,
+        WikiAsset,
+        IssueAttachment,
         # add additional Document classes here
     ]
 

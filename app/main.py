@@ -23,6 +23,7 @@ from app.routers.time_tracking import router as time_tracking_router
 from app.routers.sprint import sprints_router
 from app.routers.issues import issues_router
 from app.routers.projects import *
+from app.routers.wiki import wiki_router
 from app.routers.bulk_import import router as bulk_import_router
 from app.routers.reports import router as reports_router
 from app.routers.recycle_bin import router as recycle_bin_router
@@ -109,6 +110,7 @@ app.include_router(time_tracking_router, prefix=api_prefix)
 app.include_router(features_router, prefix=api_prefix)
 
 app.include_router(projects_router,prefix=api_prefix)
+app.include_router(wiki_router, prefix=api_prefix)
 app.include_router(boards_router,prefix=api_prefix)
 app.include_router(reports_router, prefix=api_prefix)
 app.include_router(bulk_import_router, prefix=api_prefix)

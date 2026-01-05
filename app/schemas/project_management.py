@@ -507,4 +507,56 @@ class RecycleBinResponse(BaseModel):
     items: List[RecycleBinItem]
     total: int
 
+# -------- Wiki --------
+class WikiPageCreate(BaseModel):
+    title: str
+    content: str
+    parent_id: Optional[PydanticObjectId] = None
+
+class WikiPageUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    parent_id: Optional[PydanticObjectId] = None
+
+class WikiPageOut(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    content: str
+    parent_id: Optional[str] = None
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    is_deleted: bool
+
+    class Config:
+        orm_mode = True
+
+class WikiAssetOut(BaseModel):
+    id: str
+    project_id: str
+    filename: str
+    original_name: str
+    content_type: str
+    uploaded_by: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class IssueAttachmentOut(BaseModel):
+    id: str
+    issue_id: str
+    project_id: str
+    name: str
+    file_path: str
+    file_type: str
+    content_type: str
+    uploaded_by: str
+    uploaded_by_name: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
 ProjectOut.update_forward_refs() 

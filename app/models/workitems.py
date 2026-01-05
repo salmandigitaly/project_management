@@ -17,6 +17,7 @@ from bson import ObjectId
 from bson.dbref import DBRef
 import logging
 import re
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,18 @@ class Issue(Document):
             except Exception:
                 pass
 
+        try:
+            attachments = await IssueAttachment.find(IssueAttachment.issue.id == self.id).to_list()
+        except Exception:
+            attachments = []
+        for att in attachments:
+            try:
+                if os.path.exists(att.file_path):
+                    os.remove(att.file_path)
+                await att.delete()
+            except Exception as e:
+                logger.error(f"Failed to delete attachment {att.id}: {e}")
+
     @validator("status", pre=True, always=True)
     def _normalize_status(cls, v):
         if v is None:
@@ -316,6 +329,22 @@ class ProjectDocument(Document):
 
     class Settings:
         name = "project_documents"
+        use_state_management = True
+
+
+# ================= Issue Attachments =================
+class IssueAttachment(Document):
+    issue: Link[Issue]
+    project: Link[Project]
+    name: str
+    file_path: str
+    file_type: str
+    content_type: str
+    uploaded_by: Link[User]
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "issue_attachments"
         use_state_management = True
 
 
@@ -396,6 +425,35 @@ class Feature(Document):
     class Settings:
         name = "features"
 
+# ================= Wiki System =================
+class WikiPage(Document):
+    project: Link[Project]
+    title: str
+    content: str  # Markdown content
+    parent_id: Optional[PydanticObjectId] = None  # For hierarchical structure
+    created_by: Link[User]
+    updated_by: Optional[Link[User]] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: bool = Field(default=False)
+
+    class Settings:
+        name = "wiki_pages"
+        use_state_management = True
+
+class WikiAsset(Document):
+    project: Link[Project]
+    filename: str
+    original_name: str
+    file_path: str
+    content_type: str
+    uploaded_by: Link[User]
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "wiki_assets"
+        use_state_management = True
+
 # ---------- robust cascade delete for Project ----------
 @before_event(Delete)
 async def _project_cascade_delete(sender, document, **kwargs):
@@ -440,6 +498,9 @@ async def _project_cascade_delete(sender, document, **kwargs):
 
         # models to consider for deletion (order: dependent -> children)
         models = [
+            globals().get("IssueAttachment"),
+            globals().get("WikiPage"),
+            globals().get("WikiAsset"),
             globals().get("ProjectDocument"),
             globals().get("LinkedWorkItem"),
             globals().get("Comment"),
