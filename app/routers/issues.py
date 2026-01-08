@@ -148,6 +148,7 @@ class IssuesRouter:
             "priority": i.priority,
             "status": i.status,
             "assignee_id": _id_of(i.assignee),
+            "tags": getattr(i, "tags", []) or [],
             "parent_id": _id_of(i.parent),
             "story_points": i.story_points,
             "estimated_hours": i.estimated_hours,
